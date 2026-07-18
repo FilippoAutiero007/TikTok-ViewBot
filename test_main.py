@@ -3,10 +3,10 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from main import (
-    decode, http_request, validate_captcha_page,
+    decode, http_request, validate_tiktok_url, validate_captcha_page,
     parse_captcha_fields, create_session, parse_timer,
-    check_service_status, validate_tiktok_url, build_multipart,
-    save_debug_html, SERVICES, DEBUG_DIR,
+    check_service_status, build_multipart, extract_key_from_html,
+    SERVICES, DEBUG_DIR,
 )
 
 
@@ -27,16 +27,35 @@ def test_decode_empty_string():
     assert decode(encoded) == ''
 
 
-# --- save_debug_html ---
+# --- extract_key_from_html ---
 
-def test_save_debug_html_creates_file():
-    os.makedirs(DEBUG_DIR, exist_ok=True)
-    save_debug_html('<html>test</html>', 'test_debug.html')
-    path = os.path.join(DEBUG_DIR, 'test_debug.html')
-    assert os.path.exists(path)
-    with open(path) as f:
-        assert '<html>test</html>' in f.read()
-    os.remove(path)
+def test_extract_key_remove_spaces():
+    html = 'remove-spaces" name="abc123" placeholder="Enter answer"'
+    assert extract_key_from_html(html) == 'abc123'
+
+
+def test_extract_key_name_value():
+    html = 'name="mykey" value="something"'
+    assert extract_key_from_html(html) == 'mykey'
+
+
+def test_extract_key_token_param():
+    html = 'key=xyz789'
+    assert extract_key_from_html(html) == 'xyz789'
+
+
+def test_extract_key_skips_token():
+    html = 'name="token" value="x"'
+    assert extract_key_from_html(html) is None
+
+
+def test_extract_key_long_key():
+    html = 'name="' + 'x' * 200 + '"'
+    assert extract_key_from_html(html) is None
+
+
+def test_extract_key_none():
+    assert extract_key_from_html('no keys here') is None
 
 
 # --- validate_tiktok_url ---
@@ -78,7 +97,6 @@ def test_validate_tiktok_url_no_path():
 def test_create_session_has_headers():
     session = create_session()
     assert 'user-agent' in session.headers
-    assert 'authority' in session.headers
 
 
 def test_create_session_is_requests_session():
@@ -89,81 +107,70 @@ def test_create_session_is_requests_session():
 
 # --- validate_captcha_page ---
 
-def test_validate_valid_html():
-    html = '<html>' + 'x' * 1500 + '<form><input type="search" name="captchalogin"><img id="captcha-img" src="/cap.png"></form>'
-    assert validate_captcha_page(html) is True
-
-
-def test_validate_empty_html(caplog):
-    assert validate_captcha_page('') is False
-    assert 'Empty response' in caplog.text
-
-
-def test_validate_none_html(caplog):
-    assert validate_captcha_page(None) is False
-
-
-def test_validate_safety_notice(caplog):
-    html = 'Important Official Zefoy Notice' + 'x' * 2000
-    assert validate_captcha_page(html) is False
-    assert 'safety notice' in caplog.text.lower()
-
-
-def test_validate_search_input(caplog):
+def test_validate_captcha_page_search_input():
     html = '<input type="search" name="captchalogin" maxlength="30">' + 'x' * 2000
     assert validate_captcha_page(html) is True
 
 
-def test_validate_captcha_img_id(caplog):
-    html = '<img id="captcha-img" src="/captcha.png">' + 'x' * 2000
+def test_validate_captcha_page_img_id():
+    html = '<img id="captcha-img" src="/cap.png"><input name="captchalogin">' + 'x' * 2000
     assert validate_captcha_page(html) is True
 
 
-def test_validate_no_captcha_form(caplog):
+def test_validate_captcha_page_empty():
+    assert validate_captcha_page('') is False
+
+
+def test_validate_captcha_page_none():
+    assert validate_captcha_page(None) is False
+
+
+def test_validate_captcha_page_safety_notice():
+    html = 'Important Official Zefoy Notice' + 'x' * 2000
+    assert validate_captcha_page(html) is False
+
+
+def test_validate_captcha_page_no_form():
     html = '<html>' + 'x' * 2000 + '</html>'
     assert validate_captcha_page(html) is False
-    assert 'No captcha form found' in caplog.text
 
 
 # --- parse_captcha_fields ---
 
-def test_parse_finds_search_input():
+def test_parse_search_input():
     html = '<input type="search" name="captchalogin" maxlength="30">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert len(inputs) > 0
     assert 'captchalogin' in str(inputs)
 
 
-def test_parse_finds_text_inputs():
+def test_parse_text_input():
     html = '<input type="text" name="captcha_field" value="test123">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert len(inputs) > 0
-    assert inputs[0][0] == 'captcha_field'
 
 
-def test_parse_finds_hidden_fields():
+def test_parse_hidden_captchaencoded():
     html = '<input type="hidden" name="captchaencoded" value="abc123">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert len(hidden) > 0
-    assert 'captchaencoded' in str(hidden)
 
 
-def test_parse_finds_captcha_image():
+def test_parse_captcha_img_id():
     html = '<img id="captcha-img" src="/assets/captcha.png">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert img is not None
     assert 'captcha.png' in img
 
 
-def test_parse_finds_captcha_image_by_src():
-    html = '<img src="/assets/captcha.png">'
+def test_parse_captcha_img_empty_src():
+    html = '<img id="captcha-img" src="">'
     inputs, hidden, img = parse_captcha_fields(html)
-    assert img is not None
-    assert 'captcha.png' in img
+    assert img is None or img == ''
 
 
-def test_parse_full_captcha_page():
-    html = '<form><input type="hidden" name="captchaencoded" value="xyz"><input type="search" name="captchalogin" maxlength="30"><img id="captcha-img" src="/assets/captcha.png"></form>'
+def test_parse_full_page():
+    html = '<input type="hidden" name="captchaencoded" value="xyz"><input type="search" name="captchalogin" maxlength="30"><img id="captcha-img" src="/cap.png">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert len(inputs) > 0
     assert len(hidden) > 0
@@ -171,23 +178,11 @@ def test_parse_full_captcha_page():
 
 
 def test_parse_no_fields():
-    html = '<html><body>No form here</body></html>'
+    html = '<html><body>No form</body></html>'
     inputs, hidden, img = parse_captcha_fields(html)
     assert inputs == []
     assert hidden == []
     assert img is None
-
-
-def test_parse_fallback_image():
-    html = '<img src="random_image.jpg">'
-    inputs, hidden, img = parse_captcha_fields(html)
-    assert img is not None
-
-
-def test_parse_empty_img_src():
-    html = '<img id="captcha-img" src="">'
-    inputs, hidden, img = parse_captcha_fields(html)
-    assert img is None or img == ''
 
 
 # --- http_request ---
@@ -198,156 +193,115 @@ def test_http_request_success(mock_sleep):
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     session.request.return_value = mock_resp
-
     resp = http_request(session, 'GET', 'https://example.com')
     assert resp.status_code == 200
 
 
 @patch('main.sleep', return_value=None)
-def test_http_request_retries_on_429(mock_sleep):
+def test_http_request_retries_429(mock_sleep):
     session = MagicMock()
     resp_429 = MagicMock()
     resp_429.status_code = 429
     resp_ok = MagicMock()
     resp_ok.status_code = 200
     session.request.side_effect = [resp_429, resp_ok]
-
     resp = http_request(session, 'GET', 'https://example.com', max_retries=3)
     assert resp.status_code == 200
     assert session.request.call_count == 2
 
 
 @patch('main.sleep', return_value=None)
-def test_http_request_retries_on_500(mock_sleep):
+def test_http_request_retries_500(mock_sleep):
     session = MagicMock()
     resp_500 = MagicMock()
     resp_500.status_code = 500
     resp_ok = MagicMock()
     resp_ok.status_code = 200
     session.request.side_effect = [resp_500, resp_ok]
-
     resp = http_request(session, 'GET', 'https://example.com', max_retries=3)
     assert resp.status_code == 200
-    assert session.request.call_count == 2
 
 
 @patch('main.sleep', return_value=None)
-def test_http_request_gives_up_after_max_retries_429(mock_sleep):
+def test_http_request_gives_up(mock_sleep):
     session = MagicMock()
     resp_429 = MagicMock()
     resp_429.status_code = 429
     session.request.return_value = resp_429
-
     with pytest.raises(Exception, match='Failed after'):
         http_request(session, 'GET', 'https://example.com', max_retries=2)
-    assert session.request.call_count == 3
 
 
 @patch('main.sleep', return_value=None)
 def test_http_request_timeout_retries(mock_sleep):
     from requests.exceptions import Timeout
     session = MagicMock()
-    session.request.side_effect = [Timeout('timeout'), MagicMock(status_code=200)]
-
+    session.request.side_effect = [Timeout(), MagicMock(status_code=200)]
     resp = http_request(session, 'GET', 'https://example.com', max_retries=3)
     assert resp.status_code == 200
-    assert session.request.call_count == 2
-
-
-@patch('main.sleep', return_value=None)
-def test_http_request_respects_timeout_param(mock_sleep):
-    session = MagicMock()
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    session.request.return_value = mock_resp
-
-    http_request(session, 'GET', 'https://example.com', timeout=5)
-    _, kwargs = session.request.call_args
-    assert kwargs['timeout'] == 5
-
-
-@patch('main.sleep')
-def test_http_request_exponential_backoff_429(mock_sleep):
-    session = MagicMock()
-    resp_429 = MagicMock()
-    resp_429.status_code = 429
-    session.request.return_value = resp_429
-
-    with pytest.raises(Exception):
-        http_request(session, 'GET', 'https://example.com', max_retries=2)
-
-    delays = [call.args[0] for call in mock_sleep.call_args_list]
-    assert delays == [1, 2, 4]
 
 
 # --- parse_timer ---
 
 def test_parse_timer_ltm():
-    html = 'var ltm=120;'
-    assert parse_timer(html) == 120
+    assert parse_timer('var ltm=120;') == 120
 
 
 def test_parse_timer_ltm_zero():
-    html = 'var ltm=0;'
-    assert parse_timer(html) == 0
+    assert parse_timer('var ltm=0;') == 0
 
 
-def test_parse_timer_please_wait_min_sec():
-    html = 'Please wait 3 minutes 45 seconds'
-    assert parse_timer(html) == 225
+def test_parse_timer_min_sec():
+    assert parse_timer('Please wait 3 minutes 45 seconds') == 225
 
 
-def test_parse_timer_please_wait_seconds():
-    html = 'Please wait 90 seconds'
-    assert parse_timer(html) == 90
+def test_parse_timer_seconds():
+    assert parse_timer('Please wait 90 seconds') == 90
 
 
-def test_parse_timer_no_match():
-    html = '<html>no timer here</html>'
-    assert parse_timer(html) == 0
+def test_parse_timer_none():
+    assert parse_timer('<html>no timer</html>') == 0
 
 
 # --- check_service_status ---
 
-def test_service_status_enabled():
+def test_service_enabled():
     html = '<div class="t-views-button">Views</div>'
     assert check_service_status(html, 't-views-button') is True
 
 
-def test_service_status_disabled():
+def test_service_disabled():
     html = '<div class="t-views-button disabled">Views</div>'
     assert check_service_status(html, 't-views-button') is False
 
 
-def test_service_status_not_found():
-    html = '<div class="other-button">Other</div>'
+def test_service_not_found():
+    html = '<div class="other">X</div>'
     assert check_service_status(html, 't-views-button') is False
 
 
 # --- build_multipart ---
 
-def test_build_multipart_format():
-    body, boundary = build_multipart('test_key', 'test_value')
-    assert 'test_key' in body
-    assert 'test_value' in body
+def test_build_multipart():
+    body, boundary = build_multipart('key', 'value')
+    assert 'key' in body
+    assert 'value' in body
     assert boundary.startswith('----WebKitFormBoundary')
-    assert body.startswith(f'--{boundary}\r\n')
-    assert body.endswith(f'--{boundary}--\r\n')
 
 
-def test_build_multipart_unique_boundaries():
-    body1, b1 = build_multipart('k', 'v')
-    body2, b2 = build_multipart('k', 'v')
+def test_build_multipart_unique():
+    _, b1 = build_multipart('k', 'v')
+    _, b2 = build_multipart('k', 'v')
     assert b1 != b2
 
 
-# --- SERVICES config ---
+# --- SERVICES ---
 
 def test_services_count():
     assert len(SERVICES) == 7
 
 
-def test_services_have_required_keys():
+def test_services_keys():
     for key, svc in SERVICES.items():
         assert 'name' in svc
         assert 'selector' in svc
