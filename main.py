@@ -1,4 +1,5 @@
 import re
+import ssl
 import os
 import logging
 import tempfile
@@ -6,11 +7,12 @@ from re import findall
 from io import BytesIO
 from time import sleep, time
 from base64 import b64decode
-from random import choices
+from random import choices, sample
 from string import ascii_letters, digits
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlencode
 
 import requests
+from requests.adapters import HTTPAdapter
 from PIL import Image
 from colorama import Fore, init
 
@@ -75,6 +77,55 @@ REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 CAPTCHA_MAX_ATTEMPTS = 5
 DEBUG_DIR = 'debug'
+
+
+class SSLAdapter(HTTPAdapter):
+    def __init__(self, ssl_context, **kwargs):
+        self.ssl_context = ssl_context
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs['ssl_context'] = self.ssl_context
+        super().init_poolmanager(*args, **kwargs)
+
+
+def create_ssl_context():
+    ctx = ssl.create_default_context()
+    ciphers = (
+        'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:'
+        'ECDHE+AES256:ECDHE+AES128:DHE+AES256:DHE+AES128:'
+        'RSA+AESGCM:RSA+AES:!aNULL:!eNULL:!MD5:!DSS:!RC4'
+    )
+    ctx.set_ciphers(ciphers)
+    return ctx
+
+
+def parse_cookies(cookie_str):
+    cookies = {}
+    if not cookie_str:
+        return cookies
+    for item in cookie_str.split(';'):
+        parts = item.strip().split('=')
+        if len(parts) == 2:
+            key, value = parts[0].strip(), parts[1].strip()
+            if value:
+                cookies[key] = value
+    return cookies
+
+
+def parse_set_cookie_headers(set_cookie_headers):
+    cookies = {}
+    if not set_cookie_headers:
+        return cookies
+    for cookie_header in set_cookie_headers.split(', '):
+        parts = cookie_header.split(';')
+        if parts:
+            kv = parts[0].split('=')
+            if len(kv) == 2:
+                key, value = kv[0].strip(), kv[1].strip()
+                if value:
+                    cookies[key] = value
+    return cookies
 
 
 def decode(text):
@@ -149,6 +200,81 @@ def http_request(session, method, url, max_retries=MAX_RETRIES, **kwargs):
     raise RuntimeError(f'Failed after {max_retries} retries')
 
 
+def create_session(proxy=None):
+    ctx = create_ssl_context()
+    s = requests.Session()
+    s.mount('https://', SSLAdapter(ctx))
+    s.headers.update(HEADERS)
+    if proxy:
+        s.proxies = {
+            'http': f'http://{proxy}',
+            'https': f'http://{proxy}',
+        }
+        log.info('Using proxy: %s', proxy)
+    return s
+
+
+def is_safety_notice_page(html):
+    return 'Important Official Zefoy Notice' in html or 'Official Zefoy Safety Information' in html
+
+
+def is_cloudflare_challenge(html):
+    return 'Cloudflare' in html and ('challenge' in html.lower() or 'Checking' in html)
+
+
+def is_blocked_page(html):
+    if '502 Bad Gateway' in html:
+        return True, '502 Bad Gateway - site may be blocked in your region'
+    if '403 Forbidden' in html:
+        return True, '403 Forbidden - access denied'
+    if is_cloudflare_challenge(html):
+        return True, 'Cloudflare challenge detected'
+    if is_safety_notice_page(html):
+        return True, 'Safety notice page - click required'
+    return False, None
+
+
+def handle_safety_notice(session, html):
+    log.info('Detected safety notice page, looking for continue button...')
+
+    btn_patterns = [
+        r'<button[^>]*>.*?continue.*?</button>',
+        r'<a[^>]*>.*?continue.*?</a>',
+        r'<button[^>]*>.*?proceed.*?</button>',
+        r'<button[^>]*>.*?enter.*?</button>',
+        r'<input[^>]*type="submit"[^>]*>',
+        r'<button[^>]*type="submit"[^>]*>',
+    ]
+
+    for pattern in btn_patterns:
+        matches = findall(pattern, html, re.IGNORECASE | re.DOTALL)
+        if matches:
+            log.info('Found button: %s', matches[0][:100])
+
+    redirect_match = findall(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', html)
+    if redirect_match:
+        log.info('Found redirect URL: %s', redirect_match[0])
+        try:
+            resp = http_request(session, 'GET', redirect_match[0])
+            return resp.text
+        except requests.RequestException:
+            pass
+
+    meta_refresh = findall(r'<meta[^>]*http-equiv="refresh"[^>]*content="[^"]*url=([^"]*)"', html, re.IGNORECASE)
+    if meta_refresh:
+        log.info('Found meta refresh URL: %s', meta_refresh[0])
+        try:
+            resp = http_request(session, 'GET', meta_refresh[0])
+            return resp.text
+        except requests.RequestException:
+            pass
+
+    log.warning('No continue button found. Try clicking manually in browser or use Selenium.')
+    log.info('Saving HTML for manual inspection...')
+    save_debug_html(html, 'safety_notice.html')
+    return html
+
+
 def fetch_homepage(session):
     for attempt in range(CAPTCHA_MAX_ATTEMPTS):
         log.info('Fetching Zefoy homepage (attempt %d/%d)...', attempt + 1, CAPTCHA_MAX_ATTEMPTS)
@@ -157,14 +283,20 @@ def fetch_homepage(session):
             html = resp.text.replace('&amp;', '&')
             save_debug_html(html, f'homepage_{attempt}.html')
 
-            if 'Cloudflare' in html and 'challenge' in html.lower():
-                log.warning('Cloudflare challenge detected, waiting 5s and retrying...')
-                sleep(5)
-                continue
-
-            if '502 Bad Gateway' in html:
-                log.warning('502 Bad Gateway - site may be blocked in your region, retrying...')
-                sleep(10)
+            blocked, reason = is_blocked_page(html)
+            if blocked:
+                if is_safety_notice_page(html):
+                    log.info('Safety notice detected, attempting to bypass...')
+                    html = handle_safety_notice(session, html)
+                    if not is_safety_notice_page(html):
+                        return html
+                    log.warning('Could not bypass safety notice')
+                elif is_cloudflare_challenge(html):
+                    log.warning('%s, waiting 5s and retrying...', reason)
+                    sleep(5)
+                else:
+                    log.warning('%s, retrying...', reason)
+                    sleep(10)
                 continue
 
             if len(html) < 100:
@@ -186,9 +318,11 @@ def parse_captcha_fields(html):
     captcha_img = None
 
     for pattern in [
+        r'<input[^>]*type="search"[^>]*name="([^"]*)"[^>]*>',
+        r'<input[^>]*name="([^"]*)"[^>]*type="search"[^>]*>',
         r'<input[^>]*type="text"[^>]*name="([^"]*)"[^>]*value="([^"]*)"[^>]*>',
         r'type="text"[^>]*name="([^"]*)"[^>]*value="([^"]*)"',
-        r'type="text" maxlength="50" name="([^"]*)" oninput="this.value',
+        r'type="text" maxlength="(?:30|50)" name="([^"]*)"',
         r'name="([^"]*)"[^>]*placeholder="([^"]*)"',
     ]:
         text_inputs = findall(pattern, html)
@@ -197,19 +331,39 @@ def parse_captcha_fields(html):
 
     for pattern in [
         r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"[^>]*>',
+        r'<input[^>]*name="captchaencoded"[^>]*value="([^"]*)"',
+        r'name="([^"]*)"[^>]*value="([^"]*)"[^>]*hidden',
     ]:
-        hidden_fields = findall(pattern, html)
-        if hidden_fields:
+        found = findall(pattern, html)
+        if found:
+            hidden_fields = found
             break
 
-    for img in findall(r'<img[^>]*src="([^"]*)"[^>]*>', html):
-        if 'captcha' in img.lower() or img.endswith('.png'):
-            captcha_img = img
+    img_patterns = [
+        r'<img[^>]*id="captcha-img"[^>]*src="([^"]*)"',
+        r'id="captcha-img"[^>]*src="([^"]*)"',
+        r'<img[^>]*src="([^"]*)"[^>]*id="captcha-img"',
+        r'<img[^>]*src="([^"]*)"[^>]*captcha',
+        r'<img[^>]*captcha[^>]*src="([^"]*)"',
+    ]
+    for pattern in img_patterns:
+        matches = findall(pattern, html, re.IGNORECASE)
+        for img in matches:
+            if img and img.strip():
+                captcha_img = img
+                break
+        if captcha_img:
             break
 
     if not captcha_img:
         for img in findall(r'<img[^>]*src="([^"]*)"[^>]*>', html):
-            if img:
+            if img and ('captcha' in img.lower() or img.endswith('.png')):
+                captcha_img = img
+                break
+
+    if not captcha_img:
+        for img in findall(r'<img[^>]*src="([^"]*)"[^>]*>', html):
+            if img and img.strip():
                 captcha_img = img
                 break
 
@@ -220,31 +374,36 @@ def validate_captcha_page(html):
     if not html:
         log.error('Empty response from homepage')
         return False
-    if len(html) < 1000:
-        log.warning('HTML too short (%d chars)', len(html))
+    if is_safety_notice_page(html):
+        log.warning('Still on safety notice page')
         return False
-    if 'captcha' not in html.lower():
-        log.error('No captcha detected in page')
-        save_debug_html(html, 'no_captcha.html')
-        return False
-    if 'Enter the word shown in the image' not in html:
-        log.warning('Captcha form not found - checking for alternative markers...')
-        if 'captcha' in html.lower() and ('img' in html.lower() or 'input' in html.lower()):
-            log.info('Found captcha elements, proceeding anyway')
-            return True
-        save_debug_html(html, 'no_captcha_form.html')
-        return False
-    return True
+    has_captcha_input = bool(
+        findall(r'name="captchalogin"', html, re.IGNORECASE) or
+        findall(r'type="search"[^>]*name="([^"]*)"', html) or
+        findall(r'type="text"[^>]*maxlength="(?:30|50)"', html)
+    )
+    has_captcha_img = bool(
+        findall(r'id="captcha-img"', html, re.IGNORECASE) or
+        findall(r'<img[^>]*captcha', html, re.IGNORECASE)
+    )
+    has_hidden_field = bool(
+        findall(r'name="captchaencoded"', html, re.IGNORECASE) or
+        findall(r'type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"', html)
+    )
+    if has_captcha_input or (has_captcha_img and has_hidden_field):
+        log.info('Captcha page detected (input=%s, img=%s, hidden=%s)',
+                 has_captcha_input, has_captcha_img, has_hidden_field)
+        return True
+    if 'captcha' in html.lower() and ('img' in html.lower() or 'input' in html.lower()):
+        log.info('Found captcha elements (fallback check), proceeding')
+        return True
+    log.warning('No captcha form found in page')
+    save_debug_html(html, 'no_captcha_form.html')
+    return False
 
 
-def create_session():
-    s = requests.Session()
-    s.headers.update(HEADERS)
-    return s
-
-
-def solve_captcha():
-    session = create_session()
+def solve_captcha(proxy=None):
+    session = create_session(proxy)
     html = fetch_homepage(session)
     if not html:
         log.error('Failed to fetch homepage after %d attempts', CAPTCHA_MAX_ATTEMPTS)
@@ -254,11 +413,37 @@ def solve_captcha():
         return None, None
 
     text_inputs, hidden_fields, captcha_img = parse_captcha_fields(html)
-    if not captcha_img:
-        log.error('Could not find captcha image')
+    if not text_inputs:
+        log.error('No captcha input field found')
+        save_debug_html(html, 'no_captcha_input.html')
         return None, None
+    if not captcha_img or not captcha_img.strip():
+        log.warning('Captcha image has empty src - likely JavaScript-loaded')
+        log.info('Trying to find image URL from JavaScript...')
+        js_patterns = [
+            r'captcha-img["\']?\s*\.src\s*=\s*["\']([^"\']+)["\']',
+            r'src\s*[:=]\s*["\']([^"\']*captcha[^"\']*)["\']',
+            r'captcha.*?url\s*[:=]\s*["\']([^"\']+)["\']',
+        ]
+        for pattern in js_patterns:
+            matches = findall(pattern, html, re.IGNORECASE)
+            if matches:
+                captcha_img = matches[0]
+                log.info('Found captcha URL in JS: %s', captcha_img)
+                break
+        if not captcha_img or not captcha_img.strip():
+            log.error('Cannot find captcha image URL (JavaScript-loaded, need Selenium)')
+            log.info('Tip: The captcha image is loaded by JavaScript.')
+            log.info('Try opening zefoy.com in a browser first, then paste the session cookie.')
+            save_debug_html(html, 'js_captcha.html')
+            return None, None
 
-    field = text_inputs[0][0] if text_inputs else 'captcha_secure'
+    field = 'captchalogin'
+    for inp in text_inputs:
+        name = inp[0] if isinstance(inp, tuple) else inp
+        if name:
+            field = name
+            break
     log.info('Captcha field: %s', field)
 
     if captcha_img.startswith('http'):
@@ -300,9 +485,16 @@ def solve_captcha():
 
     log.info('Submitting captcha...')
     data = {field: answer}
-    for name, value in hidden_fields:
-        if name and value:
-            data[name] = value
+    for item in hidden_fields:
+        if isinstance(item, tuple):
+            if len(item) == 2:
+                name, value = item
+                if name and value:
+                    data[name] = value
+            elif len(item) == 1:
+                data['captchaencoded'] = item[0]
+        elif isinstance(item, str):
+            data['captchaencoded'] = item
     data['token'] = ''
 
     session.headers.update({
@@ -469,17 +661,18 @@ def search_link(session, key, tiktok_url):
         return None
 
 
-def reconnect_session(old_session):
+def reconnect_session(old_session, proxy=None):
     log.warning('Attempting to reconnect...')
     sleep(5)
-    new_session, key = solve_captcha()
+    new_session, key = solve_captcha(proxy)
     return new_session, key
 
 
 def main():
     print(f'{Fore.CYAN}╔══════════════════════════════════╗')
-    print(f'{Fore.CYAN}║       Zefoy ViewBot v2           ║')
+    print(f'{Fore.CYAN}║       Zefoy ViewBot v3           ║')
     print(f'{Fore.CYAN}║  debug HTML saved to ./debug/    ║')
+    print(f'{Fore.CYAN}║  with SSL + proxy support        ║')
     print(f'{Fore.CYAN}╚══════════════════════════════════╝')
     print()
 
@@ -492,8 +685,11 @@ def main():
         log.error('Invalid TikTok URL (must be from vm.tiktok.com, tiktok.com, or vt.tiktok.com)')
         return
 
+    proxy_input = input(f'Proxy (optional, format: ip:port:user:pass or press Enter): ').strip()
+    proxy = proxy_input if proxy_input else None
+
     log.info('Starting Zefoy bot...')
-    session, key = solve_captcha()
+    session, key = solve_captcha(proxy)
 
     if not key:
         log.error('Failed to solve captcha')
@@ -530,7 +726,7 @@ def main():
         except RuntimeError as e:
             if 'Session expired' in str(e):
                 log.warning('Session expired, reconnecting...')
-                session, key = reconnect_session(session)
+                session, key = reconnect_session(session, proxy)
                 if not key:
                     log.error('Reconnect failed, stopping')
                     break
@@ -544,7 +740,7 @@ def main():
             log.error('Error at cycle %d/%d: %s', cycle, MAX_CYCLES, e)
             if errors >= MAX_ERRORS:
                 log.error('Too many consecutive errors (%d), attempting reconnect...', errors)
-                session, key = reconnect_session(session)
+                session, key = reconnect_session(session, proxy)
                 if not key:
                     log.error('Reconnect failed, stopping')
                     break

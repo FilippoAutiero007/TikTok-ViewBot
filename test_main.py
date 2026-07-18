@@ -90,12 +90,7 @@ def test_create_session_is_requests_session():
 # --- validate_captcha_page ---
 
 def test_validate_valid_html():
-    html = '<html>' + 'x' * 1500 + '<form>captcha</form>Enter the word shown in the image'
-    assert validate_captcha_page(html) is True
-
-
-def test_validate_valid_html_alt_markers():
-    html = '<html>' + 'x' * 1500 + '<form>captcha</form><img src="captcha.png"><input type="text">'
+    html = '<html>' + 'x' * 1500 + '<form><input type="search" name="captchalogin"><img id="captcha-img" src="/cap.png"></form>'
     assert validate_captcha_page(html) is True
 
 
@@ -108,30 +103,36 @@ def test_validate_none_html(caplog):
     assert validate_captcha_page(None) is False
 
 
-def test_validate_short_html(caplog):
-    html = '<html>captcha</html>'
+def test_validate_safety_notice(caplog):
+    html = 'Important Official Zefoy Notice' + 'x' * 2000
     assert validate_captcha_page(html) is False
-    assert 'too short' in caplog.text
+    assert 'safety notice' in caplog.text.lower()
 
 
-def test_validate_captcha_with_hidden_error_modal(caplog):
-    html = 'x' * 1500 + 'captcha Enter the word shown in the image'
+def test_validate_search_input(caplog):
+    html = '<input type="search" name="captchalogin" maxlength="30">' + 'x' * 2000
     assert validate_captcha_page(html) is True
 
 
-def test_validate_no_captcha_keyword(caplog):
-    html = '<html>' + 'x' * 1500 + '</html>'
-    assert validate_captcha_page(html) is False
-    assert 'No captcha detected' in caplog.text
+def test_validate_captcha_img_id(caplog):
+    html = '<img id="captcha-img" src="/captcha.png">' + 'x' * 2000
+    assert validate_captcha_page(html) is True
 
 
 def test_validate_no_captcha_form(caplog):
-    html = 'captcha some text but no form ' + 'x' * 1500
+    html = '<html>' + 'x' * 2000 + '</html>'
     assert validate_captcha_page(html) is False
-    assert 'Captcha form not found' in caplog.text
+    assert 'No captcha form found' in caplog.text
 
 
 # --- parse_captcha_fields ---
+
+def test_parse_finds_search_input():
+    html = '<input type="search" name="captchalogin" maxlength="30">'
+    inputs, hidden, img = parse_captcha_fields(html)
+    assert len(inputs) > 0
+    assert 'captchalogin' in str(inputs)
+
 
 def test_parse_finds_text_inputs():
     html = '<input type="text" name="captcha_field" value="test123">'
@@ -141,13 +142,20 @@ def test_parse_finds_text_inputs():
 
 
 def test_parse_finds_hidden_fields():
-    html = '<input type="hidden" name="token" value="abc123">'
+    html = '<input type="hidden" name="captchaencoded" value="abc123">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert len(hidden) > 0
-    assert hidden[0][0] == 'token'
+    assert 'captchaencoded' in str(hidden)
 
 
 def test_parse_finds_captcha_image():
+    html = '<img id="captcha-img" src="/assets/captcha.png">'
+    inputs, hidden, img = parse_captcha_fields(html)
+    assert img is not None
+    assert 'captcha.png' in img
+
+
+def test_parse_finds_captcha_image_by_src():
     html = '<img src="/assets/captcha.png">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert img is not None
@@ -155,7 +163,7 @@ def test_parse_finds_captcha_image():
 
 
 def test_parse_full_captcha_page():
-    html = '<form><input type="hidden" name="captcha_encoded" value="xyz"><input type="text" name="captchalogin" placeholder="Enter captcha"><img src="/assets/captcha.png"></form>'
+    html = '<form><input type="hidden" name="captchaencoded" value="xyz"><input type="search" name="captchalogin" maxlength="30"><img id="captcha-img" src="/assets/captcha.png"></form>'
     inputs, hidden, img = parse_captcha_fields(html)
     assert len(inputs) > 0
     assert len(hidden) > 0
@@ -174,6 +182,12 @@ def test_parse_fallback_image():
     html = '<img src="random_image.jpg">'
     inputs, hidden, img = parse_captcha_fields(html)
     assert img is not None
+
+
+def test_parse_empty_img_src():
+    html = '<img id="captcha-img" src="">'
+    inputs, hidden, img = parse_captcha_fields(html)
+    assert img is None or img == ''
 
 
 # --- http_request ---
