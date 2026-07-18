@@ -2,3 +2,7 @@ __pycache__/
 .pytest_cache/
 captcha.png
 *.pyc
+debug/
+TikTok-Compilation-Video-Generator/
+TikTok-Private-Api-TikApis.com/
+tiktok-followers-bot/
