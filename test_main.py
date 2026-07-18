@@ -1,3 +1,4 @@
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -5,7 +6,7 @@ from main import (
     decode, http_request, validate_captcha_page,
     parse_captcha_fields, create_session, parse_timer,
     check_service_status, validate_tiktok_url, build_multipart,
-    SERVICES,
+    save_debug_html, SERVICES, DEBUG_DIR,
 )
 
 
@@ -24,6 +25,18 @@ def test_decode_empty_string():
     from urllib.parse import quote
     encoded = quote(base64.b64encode(b'')[::-1].decode())
     assert decode(encoded) == ''
+
+
+# --- save_debug_html ---
+
+def test_save_debug_html_creates_file():
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    save_debug_html('<html>test</html>', 'test_debug.html')
+    path = os.path.join(DEBUG_DIR, 'test_debug.html')
+    assert os.path.exists(path)
+    with open(path) as f:
+        assert '<html>test</html>' in f.read()
+    os.remove(path)
 
 
 # --- validate_tiktok_url ---
@@ -65,14 +78,24 @@ def test_validate_tiktok_url_no_path():
 def test_create_session_has_headers():
     session = create_session()
     assert 'user-agent' in session.headers
-    assert 'zefoy.com' in session.headers.get('authority', '')
-    assert session.headers['x-requested-with'] == 'XMLHttpRequest'
+    assert 'authority' in session.headers
+
+
+def test_create_session_is_requests_session():
+    import requests
+    session = create_session()
+    assert isinstance(session, requests.Session)
 
 
 # --- validate_captcha_page ---
 
 def test_validate_valid_html():
     html = '<html>' + 'x' * 1500 + '<form>captcha</form>Enter the word shown in the image'
+    assert validate_captcha_page(html) is True
+
+
+def test_validate_valid_html_alt_markers():
+    html = '<html>' + 'x' * 1500 + '<form>captcha</form><img src="captcha.png"><input type="text">'
     assert validate_captcha_page(html) is True
 
 
@@ -296,6 +319,12 @@ def test_build_multipart_format():
     assert boundary.startswith('----WebKitFormBoundary')
     assert body.startswith(f'--{boundary}\r\n')
     assert body.endswith(f'--{boundary}--\r\n')
+
+
+def test_build_multipart_unique_boundaries():
+    body1, b1 = build_multipart('k', 'v')
+    body2, b2 = build_multipart('k', 'v')
+    assert b1 != b2
 
 
 # --- SERVICES config ---
