@@ -128,11 +128,11 @@ def validate_captcha_page(html):
     if len(html) < 1000:
         log(f'HTML too short ({len(html)} chars)', 'WARNING')
         return False
-    if 'Captcha code is incorrect' in html:
-        log('Captcha incorrect - previous submission failed or captcha expired', 'ERROR')
-        return False
     if 'captcha' not in html.lower():
         log('No captcha detected in page', 'ERROR')
+        return False
+    if 'Enter the word shown in the image' not in html:
+        log('Captcha form not found - may already be solved or blocked', 'WARNING')
         return False
     return True
 

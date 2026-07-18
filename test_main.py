@@ -64,7 +64,7 @@ def test_create_session_has_headers():
 # --- validate_captcha_page ---
 
 def test_validate_valid_html():
-    html = '<html>' + 'x' * 1500 + '<form>captcha</form>'
+    html = '<html>' + 'x' * 1500 + '<form>captcha</form>Enter the word shown in the image'
     assert validate_captcha_page(html) is True
 
 
@@ -83,16 +83,21 @@ def test_validate_short_html(capsys):
     assert 'too short' in capsys.readouterr().out
 
 
-def test_validate_incorrect_captcha(capsys):
-    html = 'x' * 1500 + 'Captcha code is incorrect'
-    assert validate_captcha_page(html) is False
-    assert 'Captcha incorrect' in capsys.readouterr().out
+def test_validate_captcha_with_hidden_error_modal(capsys):
+    html = 'x' * 1500 + 'captcha Enter the word shown in the image'
+    assert validate_captcha_page(html) is True
 
 
 def test_validate_no_captcha_keyword(capsys):
     html = '<html>' + 'x' * 1500 + '</html>'
     assert validate_captcha_page(html) is False
     assert 'No captcha detected' in capsys.readouterr().out
+
+
+def test_validate_no_captcha_form(capsys):
+    html = 'captcha some text but no form ' + 'x' * 1500
+    assert validate_captcha_page(html) is False
+    assert 'Captcha form not found' in capsys.readouterr().out
 
 
 # --- parse_captcha_fields ---
