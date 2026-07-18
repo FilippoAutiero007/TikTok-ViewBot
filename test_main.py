@@ -2,9 +2,10 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from main import (
-    log, decode, http_request, validate_captcha_page,
+    decode, http_request, validate_captcha_page,
     parse_captcha_fields, create_session, parse_timer,
-    check_service_status, SERVICES,
+    check_service_status, validate_tiktok_url, build_multipart,
+    SERVICES,
 )
 
 
@@ -25,31 +26,38 @@ def test_decode_empty_string():
     assert decode(encoded) == ''
 
 
-# --- log ---
+# --- validate_tiktok_url ---
 
-def test_log_outputs_info(capsys):
-    log('test message')
-    out = capsys.readouterr().out
-    assert 'INFO' in out
-    assert 'test message' in out
+def test_validate_tiktok_url_valid():
+    assert validate_tiktok_url('https://vm.tiktok.com/ZN81MaJ7k/') is True
 
 
-def test_log_outputs_error_level(capsys):
-    log('error happened', 'ERROR')
-    out = capsys.readouterr().out
-    assert 'ERROR' in out
+def test_validate_tiktok_url_www():
+    assert validate_tiktok_url('https://www.tiktok.com/@user/video/123') is True
 
 
-def test_log_outputs_warning_level(capsys):
-    log('warning msg', 'WARNING')
-    out = capsys.readouterr().out
-    assert 'WARNING' in out
+def test_validate_tiktok_url_vt():
+    assert validate_tiktok_url('https://vt.tiktok.com/abc123/') is True
 
 
-def test_log_outputs_debug_level(capsys):
-    log('debug msg', 'DEBUG')
-    out = capsys.readouterr().out
-    assert 'DEBUG' in out
+def test_validate_tiktok_url_no_scheme():
+    assert validate_tiktok_url('vm.tiktok.com/ZN81MaJ7k/') is False
+
+
+def test_validate_tiktok_url_wrong_host():
+    assert validate_tiktok_url('https://youtube.com/watch?v=123') is False
+
+
+def test_validate_tiktok_url_empty():
+    assert validate_tiktok_url('') is False
+
+
+def test_validate_tiktok_url_none():
+    assert validate_tiktok_url(None) is False
+
+
+def test_validate_tiktok_url_no_path():
+    assert validate_tiktok_url('https://tiktok.com') is False
 
 
 # --- create_session ---
@@ -68,36 +76,36 @@ def test_validate_valid_html():
     assert validate_captcha_page(html) is True
 
 
-def test_validate_empty_html(capsys):
+def test_validate_empty_html(caplog):
     assert validate_captcha_page('') is False
-    assert 'Empty response' in capsys.readouterr().out
+    assert 'Empty response' in caplog.text
 
 
-def test_validate_none_html(capsys):
+def test_validate_none_html(caplog):
     assert validate_captcha_page(None) is False
 
 
-def test_validate_short_html(capsys):
+def test_validate_short_html(caplog):
     html = '<html>captcha</html>'
     assert validate_captcha_page(html) is False
-    assert 'too short' in capsys.readouterr().out
+    assert 'too short' in caplog.text
 
 
-def test_validate_captcha_with_hidden_error_modal(capsys):
+def test_validate_captcha_with_hidden_error_modal(caplog):
     html = 'x' * 1500 + 'captcha Enter the word shown in the image'
     assert validate_captcha_page(html) is True
 
 
-def test_validate_no_captcha_keyword(capsys):
+def test_validate_no_captcha_keyword(caplog):
     html = '<html>' + 'x' * 1500 + '</html>'
     assert validate_captcha_page(html) is False
-    assert 'No captcha detected' in capsys.readouterr().out
+    assert 'No captcha detected' in caplog.text
 
 
-def test_validate_no_captcha_form(capsys):
+def test_validate_no_captcha_form(caplog):
     html = 'captcha some text but no form ' + 'x' * 1500
     assert validate_captcha_page(html) is False
-    assert 'Captcha form not found' in capsys.readouterr().out
+    assert 'Captcha form not found' in caplog.text
 
 
 # --- parse_captcha_fields ---
@@ -277,6 +285,17 @@ def test_service_status_disabled():
 def test_service_status_not_found():
     html = '<div class="other-button">Other</div>'
     assert check_service_status(html, 't-views-button') is False
+
+
+# --- build_multipart ---
+
+def test_build_multipart_format():
+    body, boundary = build_multipart('test_key', 'test_value')
+    assert 'test_key' in body
+    assert 'test_value' in body
+    assert boundary.startswith('----WebKitFormBoundary')
+    assert body.startswith(f'--{boundary}\r\n')
+    assert body.endswith(f'--{boundary}--\r\n')
 
 
 # --- SERVICES config ---
