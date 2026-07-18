@@ -1,3 +1,4 @@
+import re
 import sys
 from re import findall
 from io import BytesIO
@@ -33,6 +34,16 @@ HEADERS = {
     'sec-fetch-site': 'same-origin',
     'user-agent': USER_AGENT,
     'x-requested-with': 'XMLHttpRequest',
+}
+
+SERVICES = {
+    '1': {'name': 'Followers',    'selector': 't-followers-button'},
+    '2': {'name': 'Hearts',       'selector': 't-hearts-button'},
+    '3': {'name': 'Comments',     'selector': 't-chearts-button'},
+    '4': {'name': 'Views',        'selector': 't-views-button'},
+    '5': {'name': 'Shares',       'selector': 't-shares-button'},
+    '6': {'name': 'Favorites',    'selector': 't-favorites-button'},
+    '7': {'name': 'Live Stream',  'selector': 't-livesteam-button'},
 }
 
 
@@ -195,7 +206,69 @@ def solve_captcha():
     return None, None
 
 
-def send_views(session, key, aweme_id):
+def check_service_status(html, selector):
+    pattern = rf'class="[^"]*\b{selector}\b[^"]*"'
+    match = findall(pattern, html)
+    if not match:
+        return False
+    return 'disabled' not in match[0].lower()
+
+
+def show_services(html):
+    log('Available services:')
+    available = []
+    for num, svc in SERVICES.items():
+        status = check_service_status(html, svc['selector'])
+        icon = f'{Fore.GREEN}ON{Fore.RESET}' if status else f'{Fore.RED}OFF{Fore.RESET}'
+        print(f'  [{num}] {svc["name"]:<12} {icon}')
+        if status:
+            available.append(num)
+    return available
+
+
+def choose_service(html):
+    available = show_services(html)
+    if not available:
+        log('No services available right now', 'ERROR')
+        return None
+
+    while True:
+        choice = input(f'Choose service {available}: ').strip()
+        if choice in available:
+            return choice
+        log(f'Invalid choice. Available: {available}', 'WARNING')
+
+
+def parse_timer(html):
+    match = findall(r'ltm=(\d+);', html)
+    if match:
+        return int(match[0])
+
+    match = findall(r'Please wait.*?(\d+)\s*(?:min|minute).*?(\d+)\s*(?:sec|second)', html, re.IGNORECASE)
+    if match:
+        return int(match[0][0]) * 60 + int(match[0][1])
+
+    match = findall(r'Please wait\s+(\d+)', html)
+    if match:
+        return int(match[0])
+
+    return 0
+
+
+def wait_timer(seconds):
+    if seconds <= 0:
+        return
+    end_time = time() + seconds
+    while time() < end_time:
+        remaining = round(end_time - time())
+        mins, secs = divmod(remaining, 60)
+        label = f'{mins}m {secs:02d}s' if mins else f'{secs}s'
+        print(f'\r  Waiting {label}...  ', end='', flush=True)
+        sleep(1)
+    print('\r' + ' ' * 40, end='', flush=True)
+
+
+def send_action(session, key, aweme_id):
     token = ''.join(choices(ascii_letters + digits, k=16))
     boundary = f'----WebKitFormBoundary{token}'
     data = f'{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{aweme_id}\r\n{boundary}--\r\n'
@@ -205,10 +278,9 @@ def send_views(session, key, aweme_id):
 
     if 'Session expired' in resp:
         raise Exception('Session expired')
-    if 'views sent' in resp:
-        log(f'Views sent to {aweme_id}')
-    else:
-        log(f'Failed to send views to {aweme_id}', 'WARNING')
+    if 'views sent' in resp or 'sent' in resp.lower():
+        return True
+    return False
 
 
 def search_link(session, key, tiktok_url):
@@ -222,40 +294,57 @@ def search_link(session, key, tiktok_url):
         token, aweme_id = findall(r'name="(.*)" value="(.*)" hidden', resp)[0]
         log(f'Sending to: {aweme_id}')
         sleep(3)
-        send_views(session, token, aweme_id)
+        return send_action(session, token, aweme_id)
     else:
-        timer = int(findall(r'ltm=(\d*);', resp)[0])
-        if timer == 0:
-            return
-        end_time = time() + timer
-        while time() < end_time:
-            remaining = round(end_time - time())
-            print(f'\rWaiting {remaining}s...', end='', flush=True)
-            sleep(1)
-        print(f'\rSending views...           ')
+        timer = parse_timer(resp)
+        if timer > 0:
+            wait_timer(timer)
+        return None
 
 
 def main():
+    print(f'{Fore.CYAN}╔══════════════════════════════════╗')
+    print(f'{Fore.CYAN}║       Zefoy ViewBot              ║')
+    print(f'{Fore.CYAN}╚══════════════════════════════════╝')
+    print()
+
     tiktok_url = input('TikTok URL: ').strip()
     if not tiktok_url:
         log('No URL provided', 'ERROR')
         return
 
-    log('Starting Zefoy ViewBot...')
+    log('Starting Zefoy bot...')
     session, key = solve_captcha()
 
     if not key:
         log('Failed to solve captcha (zefoy may have blocked you)', 'ERROR')
         return
 
+    resp = http_request(session, 'GET', ZIFOY_URL)
+    html = resp.text
+
+    service = choose_service(html)
+    if not service:
+        return
+
+    svc_name = SERVICES[service]['name']
+    log(f'Selected: {svc_name}')
+
     log('Sending views...')
+    count = 0
     while True:
         try:
-            search_link(session, key, tiktok_url)
+            result = search_link(session, key, tiktok_url)
+            if result:
+                count += 1
+                log(f'Sent #{count}')
+            else:
+                log('Waiting for next cycle...', 'DEBUG')
         except Exception as e:
             log(f'Error: {e}', 'ERROR')
         sleep(5)
 
 
 if __name__ == '__main__':
+    import re
     main()
