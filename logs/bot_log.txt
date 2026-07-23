@@ -3960,3 +3960,160 @@ var start
 2026-07-18 16:22:55 DEBUG No timer and no form found in response
 2026-07-18 16:22:55 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
 2026-07-18 16:22:55 DEBUG Cycle 187/200 - no result (timer or wait)
+2026-07-18 16:23:00 DEBUG Cycle 188/200 - calling search_link
+2026-07-18 16:23:00 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:00 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:00 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:00 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-99fd4 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-99fd4','.zefoy-com-8ba74')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:00 DEBUG No timer and no form found in response
+2026-07-18 16:23:00 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:00 DEBUG Cycle 188/200 - no result (timer or wait)
+2026-07-18 16:23:05 DEBUG Cycle 189/200 - calling search_link
+2026-07-18 16:23:05 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:06 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:06 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:06 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-3b302 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-3b302','.zefoy-com-2d83a')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:06 DEBUG No timer and no form found in response
+2026-07-18 16:23:06 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:06 DEBUG Cycle 189/200 - no result (timer or wait)
+2026-07-18 16:23:11 DEBUG Cycle 190/200 - calling search_link
+2026-07-18 16:23:11 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:11 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:11 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:11 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-f3e7b col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-f3e7b','.zefoy-com-ef2a9')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:11 DEBUG No timer and no form found in response
+2026-07-18 16:23:11 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:11 DEBUG Cycle 190/200 - no result (timer or wait)
+2026-07-18 16:23:16 DEBUG Cycle 191/200 - calling search_link
+2026-07-18 16:23:16 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:17 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:17 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:17 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-c3496 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-c3496','.zefoy-com-fc73a')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:17 DEBUG No timer and no form found in response
+2026-07-18 16:23:17 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:17 DEBUG Cycle 191/200 - no result (timer or wait)
+2026-07-18 16:23:22 DEBUG Cycle 192/200 - calling search_link
+2026-07-18 16:23:22 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:23 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:23 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:23 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-188a0 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-188a0','.zefoy-com-bc061')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:23 DEBUG No timer and no form found in response
+2026-07-18 16:23:23 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:23 DEBUG Cycle 192/200 - no result (timer or wait)
+2026-07-18 16:23:28 DEBUG Cycle 193/200 - calling search_link
+2026-07-18 16:23:28 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:28 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:28 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:28 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-1879f col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-1879f','.zefoy-com-39e0d')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:28 DEBUG No timer and no form found in response
+2026-07-18 16:23:28 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:28 DEBUG Cycle 193/200 - no result (timer or wait)
+2026-07-18 16:23:33 DEBUG Cycle 194/200 - calling search_link
+2026-07-18 16:23:33 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:34 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:34 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:34 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-4f198 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-4f198','.zefoy-com-a66db')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:34 DEBUG No timer and no form found in response
+2026-07-18 16:23:34 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:34 DEBUG Cycle 194/200 - no result (timer or wait)
+2026-07-18 16:23:39 DEBUG Cycle 195/200 - calling search_link
+2026-07-18 16:23:39 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:39 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:39 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:39 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-68f6b col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-68f6b','.zefoy-com-d5c8c')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:39 DEBUG No timer and no form found in response
+2026-07-18 16:23:39 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:39 DEBUG Cycle 195/200 - no result (timer or wait)
+2026-07-18 16:23:44 DEBUG Cycle 196/200 - calling search_link
+2026-07-18 16:23:44 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:45 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:45 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:45 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-b2216 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-b2216','.zefoy-com-ce926')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:45 DEBUG No timer and no form found in response
+2026-07-18 16:23:45 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:45 DEBUG Cycle 196/200 - no result (timer or wait)
+2026-07-18 16:23:50 DEBUG Cycle 197/200 - calling search_link
+2026-07-18 16:23:50 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:51 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:51 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:51 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-2ceb7 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-2ceb7','.zefoy-com-e3d1b')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:51 DEBUG No timer and no form found in response
+2026-07-18 16:23:51 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:51 DEBUG Cycle 197/200 - no result (timer or wait)
+2026-07-18 16:23:56 DEBUG Cycle 198/200 - calling search_link
+2026-07-18 16:23:56 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:23:56 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:23:56 DEBUG search_link response: status=200 len=972
+2026-07-18 16:23:56 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-51fa5 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-51fa5','.zefoy-com-c6d7b')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:23:56 DEBUG No timer and no form found in response
+2026-07-18 16:23:56 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:23:56 DEBUG Cycle 198/200 - no result (timer or wait)
+2026-07-18 16:24:01 DEBUG Cycle 199/200 - calling search_link
+2026-07-18 16:24:01 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:24:02 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:24:02 DEBUG search_link response: status=200 len=972
+2026-07-18 16:24:02 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-9474a col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-9474a','.zefoy-com-0840d')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:24:02 DEBUG No timer and no form found in response
+2026-07-18 16:24:02 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:24:02 DEBUG Cycle 199/200 - no result (timer or wait)
+2026-07-18 16:24:07 DEBUG Cycle 200/200 - calling search_link
+2026-07-18 16:24:07 DEBUG search_link POST to https://zefoy.com/c2VuZC9mb2xeb3dlcnNfdGlrdG9V field=a8473e00eb81acb url=https://vm.tiktok.com/ZN81MaJ7k/ (attempt 1/3)
+2026-07-18 16:24:07 DEBUG https://zefoy.com:443 "POST /c2VuZC9mb2xeb3dlcnNfdGlrdG9V HTTP/1.1" 200 None
+2026-07-18 16:24:07 DEBUG search_link response: status=200 len=972
+2026-07-18 16:24:07 DEBUG search_link decoded (first 300):  
+<div class="row text-light d-flex justify-content-center">
+<div align="center" class="zefoy-48770 col-6 col-md-4 px-1 col align-self-center">
+<form action="c2VuZC9mb2xeb3dlcnNfdGlrdG9V" onsubmit="fcde('.zefoy-48770','.zefoy-com-2b954')">
+<input type="hidden" name="d7e18583e135c98" value="766176715
+2026-07-18 16:24:07 DEBUG No timer and no form found in response
+2026-07-18 16:24:07 DEBUG Saved HTML to debug\search_link_unknown.html (709 chars)
+2026-07-18 16:24:07 DEBUG Cycle 200/200 - no result (timer or wait)
+2026-07-18 16:24:12 INFO Done. Total sent: 0

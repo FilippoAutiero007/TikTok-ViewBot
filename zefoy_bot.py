@@ -8,7 +8,6 @@ import binascii
 import csv
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from re import findall
 from io import BytesIO
 from time import sleep, time
 from base64 import b64decode
@@ -19,12 +18,23 @@ from datetime import datetime
 
 import requests
 from requests.adapters import HTTPAdapter
-from PIL import Image
 from colorama import Fore, init
+
+try:
+    import chromedriver_autoinstaller
+    chromedriver_autoinstaller.install()
+except ImportError:
+    pass
+
+try:
+    import pyfiglet
+    HAS_PYFIGLET = True
+except ImportError:
+    HAS_PYFIGLET = False
 
 init()
 
-LOG_FILE = 'bot_log.txt'
+LOG_FILE = 'logs/bot_log.txt'
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -36,6 +46,22 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+
+
+def clear_terminal():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+
+def set_window_title(title):
+    if os.name == 'nt':
+        os.system(f'title {title}')
+    else:
+        sys.stdout.write(f'\033]0;{title}\007')
+        sys.stdout.flush()
+
+
+def format_number(n):
+    return format(n, ',d').replace(',', '.')
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 ZEFOY_URL = 'https://zefoy.com'
@@ -95,7 +121,12 @@ def create_ssl_context():
 
 
 def decode(text):
-    return b64decode(unquote(text[::-1])).decode()
+    if not text:
+        raise ValueError('Empty text for decode')
+    try:
+        return b64decode(unquote(text[::-1])).decode()
+    except Exception as e:
+        raise ValueError(f'Decode failed: {e}')
 
 
 def save_debug_html(html, filename='response.html'):
@@ -164,7 +195,9 @@ def create_session(proxy=None):
     s.mount('https://', SSLAdapter(ctx))
     s.headers.update(HEADERS)
     if proxy:
-        s.proxies = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
+        if not proxy.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+            proxy = f'http://{proxy}'
+        s.proxies = {'http': proxy, 'https': proxy}
         log.info('Using proxy: %s', proxy)
     return s
 
@@ -173,7 +206,7 @@ def extract_key_from_html(html):
     for pattern in [r'remove-spaces" name="([^"]*)"[^>]*placeholder',
                     r'name="([^"]*)"[^>]*value="([^"]*)"',
                     r'key=(\w+)']:
-        for match in findall(pattern, html):
+        for match in re.findall(pattern, html):
             key = match[0] if isinstance(match, tuple) else match
             if len(key) < 100 and key != 'token':
                 return key
@@ -188,22 +221,23 @@ def validate_captcha_page(html):
         log.warning('Safety notice page')
         return False
     has_captcha_input = bool(
-        findall(r'name="captchalogin"', html, re.IGNORECASE) or
-        findall(r'type="search"[^>]*name="([^"]*)"', html) or
-        findall(r'type="text"[^>]*maxlength="(?:30|50)"', html)
+        re.findall(r'name="captchalogin"', html, re.IGNORECASE) or
+        re.findall(r'type="search"[^>]*name="([^"]*)"', html) or
+        re.findall(r'type="text"[^>]*maxlength="(?:30|50)"', html)
     )
     has_captcha_img = bool(
-        findall(r'id="captcha-img"', html, re.IGNORECASE) or
-        findall(r'<img[^>]*captcha', html, re.IGNORECASE)
+        re.findall(r'id="captcha-img"', html, re.IGNORECASE) or
+        re.findall(r'<img[^>]*captcha', html, re.IGNORECASE)
     )
     has_hidden_field = bool(
-        findall(r'name="captchaencoded"', html, re.IGNORECASE) or
-        findall(r'type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"', html)
+        re.findall(r'name="captchaencoded"', html, re.IGNORECASE) or
+        re.findall(r'type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"', html)
     )
     if has_captcha_input or (has_captcha_img and has_hidden_field):
         return True
     if 'captcha' in html.lower() and ('img' in html.lower() or 'input' in html.lower()):
-        return True
+        if re.search(r'<(?:input|img)[^>]*(?:type|src)="[^"]*captcha', html, re.IGNORECASE):
+            return True
     log.warning('No captcha form found in page')
     save_debug_html(html, 'no_captcha_form.html')
     return False
@@ -222,7 +256,7 @@ def parse_captcha_fields(html):
         r'type="text" maxlength="(?:30|50)" name="([^"]*)"',
         r'name="([^"]*)"[^>]*placeholder="([^"]*)"',
     ]:
-        text_inputs = findall(pattern, html)
+        text_inputs = re.findall(pattern, html)
         if text_inputs:
             break
 
@@ -231,7 +265,7 @@ def parse_captcha_fields(html):
         r'<input[^>]*name="captchaencoded"[^>]*value="([^"]*)"',
         r'name="([^"]*)"[^>]*value="([^"]*)"[^>]*hidden',
     ]:
-        found = findall(pattern, html)
+        found = re.findall(pattern, html)
         if found:
             hidden_fields = found
             break
@@ -244,7 +278,7 @@ def parse_captcha_fields(html):
         r'<img[^>]*captcha[^>]*src="([^"]*)"',
     ]
     for pattern in img_patterns:
-        matches = findall(pattern, html, re.IGNORECASE)
+        matches = re.findall(pattern, html, re.IGNORECASE)
         for img in matches:
             if img and img.strip():
                 captcha_img = img
@@ -253,13 +287,13 @@ def parse_captcha_fields(html):
             break
 
     if not captcha_img:
-        for img in findall(r'<img[^>]*src="([^"]*)"[^>]*>', html):
+        for img in re.findall(r'<img[^>]*src="([^"]*)"[^>]*>', html):
             if img and ('captcha' in img.lower() or img.endswith('.png')):
                 captcha_img = img
                 break
 
     if not captcha_img:
-        for img in findall(r'<img[^>]*src="([^"]*)"[^>]*>', html):
+        for img in re.findall(r'<img[^>]*src="([^"]*)"[^>]*>', html):
             if img and img.strip():
                 captcha_img = img
                 break
@@ -302,7 +336,9 @@ def solve_with_selenium(proxy=None):
         'profile.default_content_setting_values.notifications': 2,
     })
     if proxy:
-        chrome_options.add_argument(f'--proxy-server=http://{proxy}')
+        if not proxy.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+            proxy = f'http://{proxy}'
+        chrome_options.add_argument(f'--proxy-server={proxy}')
 
     try:
         driver = webdriver.Chrome(options=chrome_options)
@@ -337,8 +373,13 @@ def solve_with_selenium(proxy=None):
                 log.info('Captcha solved! Key: %s', key)
                 session = create_session(proxy)
                 for cookie in driver.get_cookies():
-                    session.cookies.set(cookie['name'], cookie['value'],
-                                        domain=cookie.get('domain', ''))
+                    session.cookies.set(
+                        cookie['name'], cookie['value'],
+                        domain=cookie.get('domain', ''),
+                        path=cookie.get('path', '/'),
+                        secure=cookie.get('secure', False),
+                        expiry=cookie.get('expiry', None)
+                    )
                 driver.quit()
                 return session, key
             log.info('Waiting for page to update... (%d/30)', attempt + 1)
@@ -415,10 +456,10 @@ def solve_with_cookie(proxy=None):
 
 def check_service_status(html, selector):
     btn_pattern = rf'<button[^>]*class="[^"]*\b{re.escape(selector)}\b[^"]*"[^>]*>'
-    btn_match = findall(btn_pattern, html, re.IGNORECASE)
+    btn_match = re.findall(btn_pattern, html, re.IGNORECASE)
     if not btn_match:
         btn_pattern2 = rf'<[^>]*class="[^"]*\b{re.escape(selector)}\b[^"]*"[^>]*>'
-        btn_match = findall(btn_pattern2, html, re.IGNORECASE)
+        btn_match = re.findall(btn_pattern2, html, re.IGNORECASE)
 
     if btn_match:
         tag = btn_match[0].lower()
@@ -431,7 +472,7 @@ def check_service_status(html, selector):
 
     menu_selector = selector.replace('-button', '-menu')
     menu_pattern = rf'<div[^>]*class="[^"]*\b{re.escape(menu_selector)}\b[^"]*"[^>]*>.*?</div>'
-    menu_match = findall(menu_pattern, html, re.IGNORECASE | re.DOTALL)
+    menu_match = re.findall(menu_pattern, html, re.IGNORECASE | re.DOTALL)
     if menu_match:
         menu_html = menu_match[0]
         if '<form' in menu_html.lower() and 'input' in menu_html.lower():
@@ -447,21 +488,21 @@ def check_service_status(html, selector):
 
 def extract_service_form(html, menu_selector):
     menu_pattern = rf'<div[^>]*class="[^"]*\b{re.escape(menu_selector)}\b[^"]*"[^>]*>(.*?)</div>'
-    menu_match = findall(menu_pattern, html, re.IGNORECASE | re.DOTALL)
+    menu_match = re.findall(menu_pattern, html, re.IGNORECASE | re.DOTALL)
     if not menu_match:
         return None, None
 
     menu_html = menu_match[0]
 
     action_pattern = r'action="([^"]*)"'
-    action_match = findall(action_pattern, menu_html)
+    action_match = re.findall(action_pattern, menu_html)
     if action_match:
         action_url = f'{ZEFOY_URL}/{action_match[0]}'
     else:
         action_url = None
 
     name_pattern = r'name="([^"]*)"'
-    name_match = findall(name_pattern, menu_html)
+    name_match = re.findall(name_pattern, menu_html)
     field_name = None
     for name in name_match:
         if name and len(name) > 5 and name != 'token':
@@ -506,13 +547,13 @@ def choose_service(html):
 
 
 def parse_timer(html):
-    match = findall(r'ltm=(\d+);', html)
+    match = re.findall(r'ltm=(\d+);', html)
     if match:
         return int(match[0])
-    match = findall(r'Please wait.*?(\d+)\s*(?:min|minute).*?(\d+)\s*(?:sec|second)', html, re.IGNORECASE)
+    match = re.findall(r'Please wait.*?(\d+)\s*(?:min|minute).*?(\d+)\s*(?:sec|second)', html, re.IGNORECASE)
     if match:
         return int(match[0][0]) * 60 + int(match[0][1])
-    match = findall(r'Please wait\s+(\d+)', html)
+    match = re.findall(r'Please wait\s+(\d+)', html)
     if match:
         return int(match[0])
     return 0
@@ -565,7 +606,10 @@ def send_action(session, key, aweme_id, api_url):
     log.debug('send_action decoded: %s', resp_text[:200])
     if 'Session expired' in resp_text:
         raise RuntimeError('Session expired')
-    return 'views sent' in resp_text.lower()
+    success = 'views sent' in resp_text.lower()
+    if not success:
+        log.debug('send_action: success check failed, response: %s', resp_text[:100])
+    return success
 
 
 def search_link(session, key, tiktok_url, api_url, field_name=None, max_retries=3):
@@ -593,10 +637,14 @@ def search_link(session, key, tiktok_url, api_url, field_name=None, max_retries=
         log.debug('search_link decoded (first 300): %s', resp_text[:300])
 
         if "onsubmit=\"showHideElements('.w1r','.w2r')" in resp_text:
-            matches = findall(r'name="([^"]*)"\s+value="([^"]*)"\s+hidden', resp_text)
+            matches = re.findall(r'name="([^"]*)"\s+value="([^"]*)"\s+hidden', resp_text)
             if not matches:
                 log.error('Could not extract token/aweme_id')
                 save_debug_html(resp_text, 'search_link_no_token.html')
+                return None
+            if len(matches[0]) != 2:
+                log.error('Expected 2 groups for token/aweme_id, got %d', len(matches[0]))
+                save_debug_html(resp_text, 'search_link_wrong_groups.html')
                 return None
             token, aweme_id = matches[0]
             log.info('Sending to: %s', aweme_id)
@@ -618,7 +666,7 @@ def search_link(session, key, tiktok_url, api_url, field_name=None, max_retries=
     return None
 
 
-CSV_FILE = 'stats.csv'
+CSV_FILE = 'data/stats.csv'
 
 
 def init_csv():
@@ -639,8 +687,8 @@ def generate_chart(service_name, tiktok_url):
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
-    except ImportError:
-        log.warning('matplotlib not installed, skipping chart')
+    except (ImportError, ValueError) as e:
+        log.warning('matplotlib not available or backend error: %s, skipping chart', e)
         return
 
     rows = []
@@ -670,7 +718,7 @@ def generate_chart(service_name, tiktok_url):
 
     ax1.plot(times, totals, 'o-', color='#2196F3', linewidth=2, markersize=4, label='Total views sent')
     ax1.fill_between(times, totals, alpha=0.15, color='#2196F3')
-    ax1.set_ylabel('Views totali', fontsize=11)
+    ax1.set_ylabel('Total Views', fontsize=11)
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc='upper left')
 
@@ -681,13 +729,13 @@ def generate_chart(service_name, tiktok_url):
         elapsed = (times[-1] - times[0]).total_seconds()
     rate = success_count / (elapsed / 60) if elapsed > 0 else 0
 
-    info_text = f'Inviate: {success_count} | Fallite: {fail_count} | Rate: {rate:.1f}/min'
+    info_text = f'Sent: {success_count} | Failed: {fail_count} | Rate: {rate:.1f}/min'
     ax1.text(0.5, 0.02, info_text, transform=ax1.transAxes, ha='center', fontsize=10,
              bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
 
     ax2.bar(times, timers, width=0.001, color='#FF5722', alpha=0.7, label='Timer (sec)')
     ax2.set_ylabel('Timer (sec)', fontsize=11)
-    ax2.set_xlabel('Tempo', fontsize=11)
+    ax2.set_xlabel('Time', fontsize=11)
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc='upper left')
 
@@ -703,7 +751,7 @@ def generate_chart(service_name, tiktok_url):
     print(f'{Fore.GREEN}  Grafico salvato: {os.path.abspath(chart_path)}{Fore.RESET}')
 
 
-PROXY_FILE = 'proxies.txt'
+PROXY_FILE = 'data/proxies.txt'
 STATS_LOCK = threading.Lock()
 
 
@@ -731,32 +779,33 @@ class GlobalStats:
             self.active_workers = n
 
     def print_dashboard(self):
-        elapsed = time() - self.start_time
-        mins, secs = divmod(int(elapsed), 60)
-        rate = self.total_sent / (elapsed / 60) if elapsed > 0 else 0
-        remaining = max(0, self.target - self.total_sent)
-        eta_min = remaining / rate if rate > 0 else 0
-        progress = min(100, (self.total_sent / self.target) * 100) if self.target > 0 else 0
-        bar_len = 30
-        filled = int(bar_len * progress / 100)
-        bar = '█' * filled + '░' * (bar_len - filled)
-        pct = f'{progress:.1f}%'
+        with STATS_LOCK:
+            elapsed = time() - self.start_time
+            mins, secs = divmod(int(elapsed), 60)
+            rate = self.total_sent / (elapsed / 60) if elapsed > 0 else 0
+            remaining = max(0, self.target - self.total_sent)
+            eta_min = remaining / rate if rate > 0 else 0
+            progress = min(100, (self.total_sent / self.target) * 100) if self.target > 0 else 0
+            bar_len = 30
+            filled = int(bar_len * progress / 100)
+            bar = '█' * filled + '░' * (bar_len - filled)
+            pct = f'{progress:.1f}%'
 
-        lines = [
-            f'\n{Fore.CYAN}{"═" * 55}',
-            f'  ⏱  Tempo: {mins}m {secs}s   |   Workers attivi: {self.active_workers}',
-            f'  📊  Progresso: [{bar}] {pct}',
-            f'  ✅  Inviate: {self.total_sent:,} / {self.target:,}   |   Rate: {rate:.0f}/min',
-            f'  ⏳  Rimanenti: {remaining:,}   |   ETA: {eta_min:.0f} min',
-            f'  ❌  Errori: {self.total_errors}',
-            f'{"═" * 55}{Fore.RESET}',
-        ]
-        print('\033[2J\033[H', end='')
-        print('\n'.join(lines))
+            lines = [
+                f'\n{Fore.CYAN}{"═" * 55}',
+                f'  ⏱  Tempo: {mins}m {secs}s   |   Workers attivi: {self.active_workers}',
+                f'  📊  Progresso: [{bar}] {pct}',
+                f'  ✅  Inviate: {self.total_sent:,} / {self.target:,}   |   Rate: {rate:.0f}/min',
+                f'  ⏳  Rimanenti: {remaining:,}   |   ETA: {eta_min:.0f} min',
+                f'  ❌  Errori: {self.total_errors}',
+                f'{"═" * 55}{Fore.RESET}',
+            ]
+            print('\033[2J\033[H', end='')
+            print('\n'.join(lines))
 
-        for wid, cnt in sorted(self.worker_counts.items()):
-            print(f'    Worker {wid:02d}: {cnt} views')
-        print()
+            for wid, cnt in sorted(self.worker_counts.items()):
+                print(f'    Worker {wid:02d}: {cnt} views')
+            print()
 
 
 def load_proxies():
@@ -823,9 +872,9 @@ def fetch_free_proxies(max_proxies=50):
 
 def validate_proxy(proxy, timeout=5):
     try:
-        resp = requests.get(
+        session = create_session(proxy)
+        resp = session.get(
             'https://zefoy.com',
-            proxies={'http': proxy, 'https': proxy},
             timeout=timeout,
             headers={'User-Agent': USER_AGENT},
             allow_redirects=False,
@@ -876,7 +925,7 @@ class WorkerThread:
                 html = resp.text
                 key = extract_key_from_html(html)
                 if key:
-                    self.key = self.field_name
+                    self.key = key
                     self.log('info', 'Session restored')
                     return True
             except Exception as e:
@@ -888,7 +937,12 @@ class WorkerThread:
     def log(self, level, msg, *args):
         prefix = f'[W{self.worker_id:02d}]'
         if self.proxy:
-            short_proxy = self.proxy.split(':')[0] if ':' in self.proxy else self.proxy
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(self.proxy if '://' in self.proxy else f'http://{self.proxy}')
+                short_proxy = parsed.hostname or self.proxy.split(':')[0]
+            except Exception:
+                short_proxy = self.proxy.split(':')[0] if ':' in self.proxy else self.proxy
             prefix += f'[{short_proxy}]'
         getattr(log, level)(f'{prefix} {msg}', *args)
 
@@ -912,6 +966,11 @@ class WorkerThread:
                     self.count += 1
                     self.global_stats.add_sent(self.worker_id)
                     self.errors = 0
+                    set_window_title(
+                        f'Zefoy Bot | Views Generated: {format_number(self.global_stats.total_sent)} | '
+                        f'Active Workers: {self.global_stats.active_workers} | '
+                        f'Rate: {self.global_stats.total_sent / ((time() - self.global_stats.start_time) / 60):.0f}/min'
+                    )
                 else:
                     pass
             except RuntimeError as e:
@@ -991,7 +1050,10 @@ def run_multi_thread(tiktok_url, num_threads, proxy_list, service_choice, api_ur
 
 
 def dashboard_loop(stats):
-    while stats.active_workers > 0:
+    while True:
+        with STATS_LOCK:
+            if stats.active_workers <= 0:
+                break
         stats.print_dashboard()
         sleep(3)
     stats.print_dashboard()
@@ -1002,11 +1064,30 @@ def dashboard_loop(stats):
 # ============================================================
 
 def main():
-    print(f'{Fore.CYAN}╔══════════════════════════════════════╗')
-    print(f'{Fore.CYAN}║        Zefoy ViewBot v4              ║')
-    print(f'{Fore.CYAN}║  Selenium + Cookie + Multi-Thread    ║')
-    print(f'{Fore.CYAN}╚══════════════════════════════════════╝')
-    print()
+    clear_terminal()
+    
+    if HAS_PYFIGLET:
+        print(f'{Fore.CYAN}{pyfiglet.figlet_format("Zefoy Bot", font="slant")}{Fore.RESET}')
+    else:
+        print(f'{Fore.CYAN}╔══════════════════════════════════════╗')
+        print(f'{Fore.CYAN}║        Zefoy ViewBot v4              ║')
+        print(f'{Fore.CYAN}║  Selenium + Cookie + Multi-Thread    ║')
+        print(f'{Fore.CYAN}╚══════════════════════════════════════╝{Fore.RESET}')
+    
+    print(f'{Fore.WHITE}{"=" * 50}')
+    print(f'{Fore.WHITE}Welcome to Zefoy TikTok Bot!')
+    print(f'{Fore.WHITE}{"=" * 50}')
+    print(f'''
+{Fore.WHITE}Available services:
+  {Fore.CYAN}[1]{Fore.WHITE} Increase Video Views
+  {Fore.CYAN}[2]{Fore.WHITE} Increase Video Likes  
+  {Fore.CYAN}[3]{Fore.WHITE} Increase Followers
+  {Fore.CYAN}[4]{Fore.WHITE} Increase Comments
+  {Fore.CYAN}[5]{Fore.WHITE} Increase Shares
+  {Fore.CYAN}[6]{Fore.WHITE} Increase Favorites
+  {Fore.CYAN}[7]{Fore.WHITE} Increase Live Stream
+  {Fore.CYAN}[8]{Fore.WHITE} Increase Repost
+{Fore.RESET}''')
 
     tiktok_url = input('TikTok URL: ').strip()
     if not tiktok_url:
@@ -1022,9 +1103,12 @@ def main():
   {Fore.CYAN}[2]{Fore.WHITE} Manual cookie      - paste PHPSESSID from browser{Fore.RESET}
 """)
     method = input(f'Choose method [1]: ').strip() or '1'
+    if method not in ('1', '2'):
+        log.warning('Invalid method "%s", defaulting to Selenium (1)', method)
+        method = '1'
 
     threads_input = input('Threads (default 1, multi-thread mode): ').strip()
-    num_threads = int(threads_input) if threads_input.isdigit() and int(threads_input) > 0 else 1
+    num_threads = int(threads_input) if threads_input.isdigit() and threads_input.isascii() and int(threads_input) > 0 else 1
 
     proxy = None
     proxy_list = []
@@ -1035,7 +1119,7 @@ def main():
             auto_fetch = input('Auto-fetch free proxies? (Y/n): ').strip().lower()
             if auto_fetch != 'n':
                 max_p = input('Max proxies to fetch (default 30): ').strip()
-                max_p = int(max_p) if max_p.isdigit() else 30
+                max_p = int(max_p) if max_p.isdigit() and 1 <= int(max_p) <= 500 else 30
                 proxy_list = fetch_free_proxies(max_p)
                 if proxy_list:
                     log.info('Loaded %d working proxies', len(proxy_list))
@@ -1097,7 +1181,9 @@ def main():
 
         phpsessid_pool = []
         if method == '2':
-            phpsessid_pool.append(session.cookies.get('PHPSESSID', ''))
+            phpsessid = session.cookies.get('PHPSESSID', '')
+            if phpsessid:
+                phpsessid_pool.append(phpsessid)
             print(f'\n{Fore.YELLOW}Multi-session mode: paste altri PHPSESSID (uno per riga, vuoto per terminare):{Fore.RESET}')
             while True:
                 extra = input('  PHPSESSID extra (o INVIO per terminare): ').strip()
@@ -1121,8 +1207,10 @@ def main():
         start_time = time()
         count = 0
         errors = 0
+        result = False
         for cycle in range(1, MAX_CYCLES + 1):
             cycle_timer = 0
+            cycle_start = time()
             try:
                 result = search_link(session, key, tiktok_url, api_url, field_name)
                 if result:
@@ -1158,6 +1246,7 @@ def main():
                         break
                     errors = 0
                     continue
+            cycle_timer = time() - cycle_start
             elapsed = time() - start_time
             log_cycle(cycle, result is True, count, elapsed, cycle_timer)
             sleep(5)

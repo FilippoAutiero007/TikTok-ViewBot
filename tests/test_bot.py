@@ -2,7 +2,7 @@ import os
 import pytest
 from unittest.mock import patch, MagicMock
 
-from main import (
+from zefoy_bot import (
     decode, http_request, validate_tiktok_url, validate_captcha_page,
     parse_captcha_fields, create_session, parse_timer,
     check_service_status, build_multipart, extract_key_from_html,
@@ -187,7 +187,7 @@ def test_parse_no_fields():
 
 # --- http_request ---
 
-@patch('main.sleep', return_value=None)
+@patch('zefoy_bot.sleep', return_value=None)
 def test_http_request_success(mock_sleep):
     session = MagicMock()
     mock_resp = MagicMock()
@@ -197,7 +197,7 @@ def test_http_request_success(mock_sleep):
     assert resp.status_code == 200
 
 
-@patch('main.sleep', return_value=None)
+@patch('zefoy_bot.sleep', return_value=None)
 def test_http_request_retries_429(mock_sleep):
     session = MagicMock()
     resp_429 = MagicMock()
@@ -210,7 +210,7 @@ def test_http_request_retries_429(mock_sleep):
     assert session.request.call_count == 2
 
 
-@patch('main.sleep', return_value=None)
+@patch('zefoy_bot.sleep', return_value=None)
 def test_http_request_retries_500(mock_sleep):
     session = MagicMock()
     resp_500 = MagicMock()
@@ -222,7 +222,7 @@ def test_http_request_retries_500(mock_sleep):
     assert resp.status_code == 200
 
 
-@patch('main.sleep', return_value=None)
+@patch('zefoy_bot.sleep', return_value=None)
 def test_http_request_gives_up(mock_sleep):
     session = MagicMock()
     resp_429 = MagicMock()
@@ -232,7 +232,7 @@ def test_http_request_gives_up(mock_sleep):
         http_request(session, 'GET', 'https://example.com', max_retries=2)
 
 
-@patch('main.sleep', return_value=None)
+@patch('zefoy_bot.sleep', return_value=None)
 def test_http_request_timeout_retries(mock_sleep):
     from requests.exceptions import Timeout
     session = MagicMock()
@@ -298,7 +298,7 @@ def test_build_multipart_unique():
 # --- SERVICES ---
 
 def test_services_count():
-    assert len(SERVICES) == 7
+    assert len(SERVICES) == 8
 
 
 def test_services_keys():

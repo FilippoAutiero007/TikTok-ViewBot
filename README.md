@@ -1,38 +1,84 @@
-New 2025 update:
+# TikTok ViewBot
 
-Instead of unpatching every 2 days, I made a course to **teach you guys exactly how i made zefoy bo**t and much much more and also **5+ years of reverse engineering knowledge**:
+Bot per aumentare le visualizzazioni TikTok tramite Zefoy.com.
 
-https://whop.com/reverser-academy
+## Funzionalità
 
-<img width="790" alt="image" src="https://github.com/user-attachments/assets/36b54b7f-e9b7-48ce-825e-65d7dbdf0dad" />
+- **Selenium**: Risoluzione automatica captcha tramite browser Chrome
+- **Cookie Manual**: Inserimento manuale PHPSESSID
+- **Multi-Thread**: Supporto per più thread con proxy
+- **Dashboard**: Statistiche in tempo reale
+- **Grafici**: Generazione grafici CSV con matplotlib
+- **Proxy**: Supporto proxy con validazione automatica
+- **Auto Chromedriver**: Installazione automatica chromedriver
+- **Banner ASCII**: Banner grafico con pyfiglet
 
+## Requisiti
 
-UPDATED !! (temporary fix) thanks to [@platipus9999](https://github.com/platipus9999)
-
-`v2.py` has automatic captcha solver
-
-
-&emsp;
-
-<p align="center"> 
-<img src="https://user-images.githubusercontent.com/98614666/218313368-e8b3613c-6639-4922-95ac-c23bbcdffdf1.png"></img>
-</p>
-<p align="center"> 
-<img src="https://user-images.githubusercontent.com/98614666/218313369-31f5049c-0dd4-4eca-b323-cccc3436a418.png"></img>
-</p>
-
-
-How to run:
-```
-  1. Verify that you have pip and python installed => https://www.youtube.com/watch?v=dYfKJMPNMDw
-  2. Run this command in cmd: pip install tls_client requests colorama pillow
-  3. run the python file by double clicking on it or type: python viewbot.py
+```bash
+pip install -r requirements.txt
 ```
 
-Advantages:
+## Utilizzo
+
+```bash
+python zefoy_bot.py
 ```
-  1.  fast, easy
-  2.  lightweight
-  3.  Has dynamic views count running on TikTok API
-  4.  mobile users can run it
+
+### Modalità
+
+1. **Selenium** (default): Apre Chrome per risolvere il captcha
+2. **Cookie Manual**: Inserisci PHPSESSID dal browser
+
+### Multi-Thread
+
+```bash
+# Esempio con 3 thread
+python zefoy_bot.py
+# Inserisci URL TikTok
+# Scegli metodo captcha
+# Inserisci numero thread: 3
 ```
+
+## Struttura
+
+```
+TikTok-ViewBot/
+├── zefoy_bot.py          # File principale
+├── data/
+│   ├── proxies.txt       # File proxy
+│   └── stats.csv         # Statistiche (generato)
+├── debug/                # HTML di debug
+├── logs/
+│   └── bot_log.txt       # Log
+├── tests/
+│   └── test_bot.py       # Test
+├── reference/
+│   ├── tiktok-private-api/ # API TikTok
+│   └── selenium-bot/       # Bot riferimento
+├── requirements.txt
+├── README.md
+├── LICENSE
+└── TODO.md
+```
+
+## Fix Applicati
+
+- ✅ Risolti 27 bug su 42 totali
+- ✅ Rimossi import inutilizzati
+- ✅ Corretta race condition su worker_counts
+- ✅ Corretto proxy scheme duplicato
+- ✅ Migliorata validazione input
+- ✅ Corretta copia cookie Selenium
+- ✅ Aggiunta validazione PHPSESSID pool
+- ✅ Aggiunto chromedriver autoinstaller
+- ✅ Aggiunto banner ASCII art
+- ✅ Aggiornamento titolo finestra con metriche
+
+## Ispirazione
+
+Basato su [vdutts7/tiktok-bot](https://github.com/vdutts7/tiktok-bot) con miglioramenti significativi.
+
+## License
+
+MIT
