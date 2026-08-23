@@ -2,11 +2,18 @@ import re
 import ssl
 import os
 import sys
+import json
+import select
+import platform
+
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 import logging
-import tempfile
 import binascii
 import csv
 import threading
+import subprocess
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from time import sleep, time
@@ -21,20 +28,96 @@ from requests.adapters import HTTPAdapter
 from colorama import Fore, init
 
 try:
-    import chromedriver_autoinstaller
-    chromedriver_autoinstaller.install()
-except ImportError:
-    pass
-
-try:
     import pyfiglet
     HAS_PYFIGLET = True
 except ImportError:
     HAS_PYFIGLET = False
 
+try:
+    from plyer import notification as plyer_notification
+    HAS_PLYER = True
+except ImportError:
+    HAS_PLYER = False
+
+try:
+    import sqlite3
+    HAS_SQLITE = True
+except ImportError:
+    HAS_SQLITE = False
+
 init()
 
+CONFIG_FILE = 'config.json'
 LOG_FILE = 'logs/bot_log.txt'
+os.makedirs('logs', exist_ok=True)
+
+DEFAULT_CONFIG = {
+    'max_cycles': 200,
+    'max_errors': 10,
+    'request_timeout': 30,
+    'max_retries': 5,
+    'target_views': 100000,
+    'default_threads': 1,
+    'default_time_limit_min': 30,
+    'max_threads': 50,
+    'max_time_limit_hours': 48,
+    'json_logging': False,
+}
+
+
+def load_config():
+    config = DEFAULT_CONFIG.copy()
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                user_config = json.load(f)
+            config.update({k: v for k, v in user_config.items() if k in DEFAULT_CONFIG})
+            log.debug('Loaded config from %s', CONFIG_FILE)
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning('Failed to load config: %s, using defaults', e)
+    return config
+
+
+def save_config(config):
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+        log.debug('Config saved to %s', CONFIG_FILE)
+    except OSError as e:
+        log.warning('Failed to save config: %s', e)
+
+
+def input_with_timeout(prompt, timeout_sec=300):
+    if platform.system() == 'Windows':
+        import msvcrt
+        print(prompt, end='', flush=True)
+        result = ''
+        start = time()
+        while time() - start < timeout_sec:
+            if msvcrt.kbhit():
+                ch = msvcrt.getwche()
+                if ch in ('\r', '\n'):
+                    print()
+                    return result.strip()
+                elif ch == '\b':
+                    if result:
+                        result = result[:-1]
+                        print('\b \b', end='', flush=True)
+                else:
+                    result += ch
+                    print(ch, end='', flush=True)
+            else:
+                sleep(0.05)
+        print(f'\n{Fore.YELLOW}Input timed out after {timeout_sec}s{Fore.RESET}')
+        return result.strip()
+    else:
+        print(prompt, end='', flush=True)
+        rlist, _, _ = select.select([sys.stdin], [], [], timeout_sec)
+        if rlist:
+            return sys.stdin.readline().strip()
+        print(f'\n{Fore.YELLOW}Input timed out after {timeout_sec}s{Fore.RESET}')
+        return ''
+
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -47,25 +130,264 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+CONFIG = load_config()
+
+try:
+    import chromedriver_autoinstaller
+    chromedriver_autoinstaller.install()
+except ImportError:
+    pass
+except Exception as e:
+    log.warning('chromedriver_autoinstaller failed: %s', e)
+
 
 def clear_terminal():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    if os.name == 'nt':
+        os.system('cls')
+    else:
+        os.system('clear')
+
+
+def supports_ansi():
+    if os.name == 'nt':
+        return os.environ.get('ANSICON') or 'ANSI' in os.environ.get('TERM', '') or hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+    return hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+
+
+ANSI_SUPPORTED = supports_ansi()
+
+
+def clear_screen():
+    if ANSI_SUPPORTED:
+        sys.stdout.write('\033[2J\033[H')
+        sys.stdout.flush()
+    else:
+        clear_terminal()
 
 
 def set_window_title(title):
+    safe_title = re.sub(r'[&|;<>`\\]', '', title)
     if os.name == 'nt':
-        os.system(f'title {title}')
+        subprocess.run(['cmd', '/c', 'title', safe_title], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     else:
-        sys.stdout.write(f'\033]0;{title}\007')
+        sys.stdout.write(f'\033]0;{safe_title}\007')
         sys.stdout.flush()
 
 
 def format_number(n):
     return format(n, ',d').replace(',', '.')
 
+
+# ============================================================
+# M6: Structured JSON Logging
+# ============================================================
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_data = {
+            'time': self.formatTime(record),
+            'level': record.levelname,
+            'message': record.getMessage(),
+        }
+        if record.exc_info:
+            log_data['exception'] = self.formatException(record.exc_info)
+        return json.dumps(log_data, ensure_ascii=False)
+
+
+def setup_json_logging():
+    json_handler = logging.FileHandler('logs/bot_log.json', mode='a', encoding='utf-8')
+    json_handler.setFormatter(JsonFormatter())
+    log.addHandler(json_handler)
+
+
+if CONFIG.get('json_logging'):
+    setup_json_logging()
+
+
+# ============================================================
+# M7: Proxy Health Check
+# ============================================================
+
+class ProxyHealthChecker:
+    def __init__(self):
+        self.proxy_stats = {}
+        self.lock = threading.Lock()
+
+    def record(self, proxy, success):
+        with self.lock:
+            if proxy not in self.proxy_stats:
+                self.proxy_stats[proxy] = {'success': 0, 'fail': 0, 'last_check': time()}
+            stats = self.proxy_stats[proxy]
+            if success:
+                stats['success'] += 1
+            else:
+                stats['fail'] += 1
+            stats['last_check'] = time()
+
+    def is_healthy(self, proxy, min_success_rate=0.3):
+        with self.lock:
+            if proxy not in self.proxy_stats:
+                return True
+            stats = self.proxy_stats[proxy]
+            total = stats['success'] + stats['fail']
+            if total < 3:
+                return True
+            rate = stats['success'] / total
+            return rate >= min_success_rate
+
+    def get_best_proxy(self, proxy_list):
+        healthy = [p for p in proxy_list if self.is_healthy(p)]
+        return healthy[0] if healthy else (proxy_list[0] if proxy_list else None)
+
+
+PROXY_HEALTH = ProxyHealthChecker()
+
+
+def notify_desktop(title, message):
+    if not HAS_PLYER:
+        return
+    try:
+        plyer_notification.notify(
+            title=title,
+            message=message,
+            app_name='Zefoy Bot',
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+# ============================================================
+# M8: Adaptive Rate Limiter
+# ============================================================
+
+class AdaptiveRateLimiter:
+    def __init__(self, base_delay=5, min_delay=1, max_delay=30):
+        self.base_delay = base_delay
+        self.min_delay = min_delay
+        self.max_delay = max_delay
+        self.current_delay = base_delay
+        self.recent_codes = []
+        self.lock = threading.Lock()
+
+    def record_status(self, status_code):
+        with self.lock:
+            self.recent_codes.append((time(), status_code))
+            cutoff = time() - 60
+            self.recent_codes = [(t, c) for t, c in self.recent_codes if t > cutoff]
+            rate_limit_count = sum(1 for _, c in self.recent_codes if c == 429)
+            error_count = sum(1 for _, c in self.recent_codes if c >= 500)
+            if rate_limit_count > 0:
+                self.current_delay = min(self.max_delay, self.current_delay * (1 + rate_limit_count * 0.5))
+                log.debug('Rate limiter: increased delay to %.1fs (429 count: %d)', self.current_delay, rate_limit_count)
+            elif error_count > 2:
+                self.current_delay = min(self.max_delay, self.current_delay * 1.3)
+            elif len(self.recent_codes) > 5:
+                success_count = sum(1 for _, c in self.recent_codes if 200 <= c < 400)
+                if success_count / len(self.recent_codes) > 0.9:
+                    self.current_delay = max(self.min_delay, self.current_delay * 0.9)
+
+    def get_delay(self):
+        with self.lock:
+            return self.current_delay
+
+
+RATE_LIMITER = AdaptiveRateLimiter()
+
+
+# ============================================================
+# M11: SQLite Stats
+# ============================================================
+
+class SqliteStats:
+    def __init__(self, db_path='data/stats.db'):
+        self.db_path = db_path
+        self.lock = threading.Lock()
+        if HAS_SQLITE:
+            self._init_db()
+
+    def _init_db(self):
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute('''CREATE TABLE IF NOT EXISTS cycles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                cycle INTEGER,
+                success INTEGER,
+                total_sent INTEGER,
+                elapsed_sec REAL,
+                timer_sec INTEGER,
+                worker_id INTEGER,
+                service TEXT
+            )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                service TEXT,
+                total_sent INTEGER,
+                duration_sec REAL
+            )''')
+            conn.commit()
+            conn.close()
+
+    def log_cycle(self, cycle, success, total_sent, elapsed, timer=0, worker_id=0, service=''):
+        if not HAS_SQLITE:
+            return
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.execute(
+                    'INSERT INTO cycles (timestamp, cycle, success, total_sent, elapsed_sec, timer_sec, worker_id, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), cycle, int(success), total_sent, f'{elapsed:.1f}', timer, worker_id, service)
+                )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                log.debug('SQLite log_cycle failed: %s', e)
+
+    def log_session_end(self, service, total_sent, duration_sec):
+        if not HAS_SQLITE:
+            return
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.execute(
+                    'INSERT INTO sessions (timestamp, service, total_sent, duration_sec) VALUES (?, ?, ?, ?)',
+                    (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), service, total_sent, duration_sec)
+                )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                log.debug('SQLite log_session_end failed: %s', e)
+
+    def get_stats(self, service=None, last_n=None):
+        if not HAS_SQLITE:
+            return []
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                query = 'SELECT * FROM cycles'
+                params = []
+                if service:
+                    query += ' WHERE service = ?'
+                    params.append(service)
+                query += ' ORDER BY id DESC'
+                if last_n:
+                    query += ' LIMIT ?'
+                    params.append(last_n)
+                rows = conn.execute(query, params).fetchall()
+                conn.close()
+                return rows
+            except Exception:
+                return []
+
+
+SQLITE_STATS = SqliteStats()
+
+
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 ZEFOY_URL = 'https://zefoy.com'
-API_URL = f'{ZEFOY_URL}/c2VuZF9mb2xsb3dlcnNfdGlrdG9L'
 
 HEADERS = {
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -92,10 +414,10 @@ SERVICES = {
     '8': {'name': 'Repost',      'selector': 't-repost-button',    'menu': 't-repost-menu'},
 }
 
-MAX_CYCLES = 200
-MAX_ERRORS = 10
-REQUEST_TIMEOUT = 30
-MAX_RETRIES = 5
+MAX_CYCLES = CONFIG['max_cycles']
+MAX_ERRORS = CONFIG['max_errors']
+REQUEST_TIMEOUT = CONFIG['request_timeout']
+MAX_RETRIES = CONFIG['max_retries']
 DEBUG_DIR = 'debug'
 
 
@@ -154,6 +476,7 @@ def http_request(session, method, url, max_retries=MAX_RETRIES, **kwargs):
     for attempt in range(max_retries + 1):
         try:
             resp = session.request(method, url, **kwargs)
+            RATE_LIMITER.record_status(resp.status_code)
             if resp.status_code == 429:
                 delay = min(30, 5 * (2 ** attempt))
                 log.warning('Rate limited (429), waiting %ds... (attempt %d/%d)', delay, attempt + 1, max_retries + 1)
@@ -195,9 +518,18 @@ def create_session(proxy=None):
     s.mount('https://', SSLAdapter(ctx))
     s.headers.update(HEADERS)
     if proxy:
-        if not proxy.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+        if not proxy.startswith(('http://', 'https://', 'socks5://', 'socks5h://', 'socks4://', 'socks4a://')):
             proxy = f'http://{proxy}'
         s.proxies = {'http': proxy, 'https': proxy}
+        if proxy.startswith(('socks5://', 'socks5h://', 'socks4://', 'socks4a://')):
+            try:
+                import urllib3.contrib.socks
+                s.mount('socks5://', urllib3.contrib.socks.SOCKSProxyManager)
+                s.mount('socks5h://', urllib3.contrib.socks.SOCKSProxyManager)
+                s.mount('socks4://', urllib3.contrib.socks.SOCKSProxyManager)
+                s.mount('socks4a://', urllib3.contrib.socks.SOCKSProxyManager)
+            except ImportError:
+                log.warning('PySocks/urllib3[socks] not installed. SOCKS proxy may fail. Install: pip install urllib3[socks]')
         log.info('Using proxy: %s', proxy)
     return s
 
@@ -235,9 +567,6 @@ def validate_captcha_page(html):
     )
     if has_captcha_input or (has_captcha_img and has_hidden_field):
         return True
-    if 'captcha' in html.lower() and ('img' in html.lower() or 'input' in html.lower()):
-        if re.search(r'<(?:input|img)[^>]*(?:type|src)="[^"]*captcha', html, re.IGNORECASE):
-            return True
     log.warning('No captcha form found in page')
     save_debug_html(html, 'no_captcha_form.html')
     return False
@@ -364,7 +693,8 @@ def solve_with_selenium(proxy=None):
         except TimeoutException:
             log.warning('Timed out waiting for captcha form, checking page state...')
 
-        input(f'{Fore.YELLOW}Solve the captcha in the browser, then press Enter here...{Fore.RESET}')
+        result = input_with_timeout(f'{Fore.YELLOW}Solve the captcha in the browser, then press Enter here...{Fore.RESET}', timeout_sec=600)
+        log.debug('Captcha input returned: %s', repr(result))
 
         for attempt in range(30):
             html = driver.page_source
@@ -378,7 +708,6 @@ def solve_with_selenium(proxy=None):
                         domain=cookie.get('domain', ''),
                         path=cookie.get('path', '/'),
                         secure=cookie.get('secure', False),
-                        expiry=cookie.get('expiry', None)
                     )
                 driver.quit()
                 return session, key
@@ -422,7 +751,7 @@ def solve_with_cookie(proxy=None):
 3. Open Developer Tools (F12) -> Application -> Cookies
 4. Copy the PHPSESSID value{Fore.RESET}
 """)
-    phpsessid = input('Paste PHPSESSID: ').strip()
+    phpsessid = input_with_timeout('Paste PHPSESSID: ', timeout_sec=60).strip()
     if not phpsessid:
         log.error('No PHPSESSID provided')
         return None, None
@@ -486,9 +815,18 @@ def check_service_status(html, selector):
     return False
 
 
+def is_valid_base64_action(action):
+    import string as _string
+    valid_chars = set(_string.ascii_letters + _string.digits + '+/=')
+    return bool(action) and len(action) > 10 and all(c in valid_chars for c in action)
+
+
 def extract_service_form(html, menu_selector):
-    menu_pattern = rf'<div[^>]*class="[^"]*\b{re.escape(menu_selector)}\b[^"]*"[^>]*>(.*?)</div>'
+    menu_pattern = rf'<div[^>]*class="[^"]*\b{re.escape(menu_selector)}\b[^"]*"[^>]*>(.*?)</div>\s*</div>'
     menu_match = re.findall(menu_pattern, html, re.IGNORECASE | re.DOTALL)
+    if not menu_match:
+        menu_pattern = rf'<div[^>]*class="[^"]*\b{re.escape(menu_selector)}\b[^"]*"[^>]*>(.*?)</div>'
+        menu_match = re.findall(menu_pattern, html, re.IGNORECASE | re.DOTALL)
     if not menu_match:
         return None, None
 
@@ -497,7 +835,12 @@ def extract_service_form(html, menu_selector):
     action_pattern = r'action="([^"]*)"'
     action_match = re.findall(action_pattern, menu_html)
     if action_match:
-        action_url = f'{ZEFOY_URL}/{action_match[0]}'
+        raw_action = action_match[0]
+        if is_valid_base64_action(raw_action):
+            action_url = f'{ZEFOY_URL}/{raw_action}'
+        else:
+            log.warning('Extracted action "%s" is not valid base64, trying to find correct form', raw_action)
+            action_url = None
     else:
         action_url = None
 
@@ -509,41 +852,43 @@ def extract_service_form(html, menu_selector):
             field_name = name
             break
 
+    if not action_url or not field_name:
+        all_forms = re.findall(
+            rf'<div[^>]*class="[^"]*\b{re.escape(menu_selector)}\b[^"]*"[^>]*>.*?</form>',
+            html, re.IGNORECASE | re.DOTALL
+        )
+        for form_html in all_forms:
+            am = re.findall(r'action="([^"]*)"', form_html)
+            if am and is_valid_base64_action(am[0]):
+                action_url = f'{ZEFOY_URL}/{am[0]}'
+                nm = re.findall(r'name="([^"]*)"', form_html)
+                for n in nm:
+                    if n and len(n) > 5 and n != 'token':
+                        field_name = n
+                        break
+                if action_url and field_name:
+                    break
+
     return action_url, field_name
 
 
 def show_services(html):
     log.info('Available services:')
     available = []
+    disabled = []
     for num, svc in SERVICES.items():
         status = check_service_status(html, svc['selector'])
-        icon = f'{Fore.GREEN}ON{Fore.RESET}' if status else f'{Fore.RED}OFF{Fore.RESET}'
-        print(f'  [{num}] {svc["name"]:<12} {icon}')
         if status:
+            icon = f'{Fore.GREEN}ON{Fore.RESET}'
             available.append(num)
+        else:
+            icon = f'{Fore.RED}OFF{Fore.RESET}'
+            disabled.append(num)
+        print(f'  [{num}] {svc["name"]:<12} {icon}')
+    if disabled:
+        print(f'\n  {Fore.RED}OFF services are disabled by zefoy.com (not a bot bug){Fore.RESET}')
     return available
 
-
-def choose_service(html):
-    available = show_services(html)
-    if not available:
-        log.error('No services available right now')
-        save_debug_html(html, 'services_all_off.html')
-        log.info('Debug HTML saved to ./debug/services_all_off.html')
-        return None, None, None
-    while True:
-        choice = input(f'Choose service {available}: ').strip()
-        if choice in available:
-            svc = SERVICES[choice]
-            api_url, field_name = extract_service_form(html, svc['menu'])
-            if not api_url or not field_name:
-                log.warning('Could not extract form for %s, using default API URL', svc['name'])
-                api_url = API_URL
-                field_name = None
-            else:
-                log.info('Service form: url=%s field=%s', api_url, field_name)
-            return choice, api_url, field_name
-        log.warning('Invalid choice. Available: %s', available)
 
 
 def parse_timer(html):
@@ -573,12 +918,13 @@ def wait_timer(seconds):
 
 
 def build_multipart(key, value):
+    safe_value = value.replace('\r', '').replace('\n', '').replace('\x00', '')
     token = ''.join(choices(ascii_letters + digits, k=16))
     boundary = f'----WebKitFormBoundary{token}'
     body = (
         f'--{boundary}\r\n'
         f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
-        f'{value}\r\n'
+        f'{safe_value}\r\n'
         f'--{boundary}--\r\n'
     )
     return body, boundary
@@ -595,20 +941,41 @@ def send_action(session, key, aweme_id, api_url):
         return False
     log.debug('send_action response: status=%d len=%d', resp.status_code, len(resp.text))
     if resp.status_code in (301, 302, 303, 307, 308):
-        log.error('send_action got redirect %d to %s', resp.status_code, resp.headers.get('Location', ''))
+        location = resp.headers.get('Location', '')
+        log.error('send_action got redirect %d to %s', resp.status_code, location)
+        return False
+    if resp.url and resp.url.rstrip('/') != api_url.rstrip('/'):
+        log.warning('send_action redirected to %s', resp.url)
+        return False
+    if resp.status_code == 200 and len(resp.text) > 10000 and '<html' in resp.text.lower():
+        log.error('send_action got full HTML page instead of API response')
+        return False
+    raw = resp.text
+    timer_raw = parse_timer(raw)
+    if timer_raw > 0:
+        log.info('send_action timer: %ds', timer_raw)
         return False
     try:
-        resp_text = decode(resp.text)
+        resp_text = decode(raw)
     except (binascii.Error, UnicodeDecodeError, ValueError) as e:
-        log.error('Failed to decode response: %s', e)
-        save_debug_html(resp.text, 'send_action_decode_error.html')
+        log.error('Failed to decode send_action response: %s', e)
+        save_debug_html(raw, 'send_action_decode_error.html')
         return False
     log.debug('send_action decoded: %s', resp_text[:200])
     if 'Session expired' in resp_text:
         raise RuntimeError('Session expired')
-    success = 'views sent' in resp_text.lower()
+    lower = resp_text.lower()
+    text_success = any(phrase in lower for phrase in [
+        'views sent', 'hearts sent', 'followers sent', 'comments',
+        'shares sent', 'favorites sent', 'repost sent', 'sent successfully',
+        'success', 'completed'
+    ])
+    form_success = "onsubmit=\"fcde(" in resp_text or "onsubmit=\"showHideElements(" in resp_text
+    success = text_success or form_success
     if not success:
         log.debug('send_action: success check failed, response: %s', resp_text[:100])
+    else:
+        log.debug('send_action: success (text=%s, form=%s)', text_success, form_success)
     return success
 
 
@@ -625,19 +992,45 @@ def search_link(session, key, tiktok_url, api_url, field_name=None, max_retries=
             return None
         log.debug('search_link response: status=%d len=%d', resp.status_code, len(resp.text))
         if resp.status_code in (301, 302, 303, 307, 308):
-            log.error('search_link got redirect %d to %s', resp.status_code, resp.headers.get('Location', ''))
+            location = resp.headers.get('Location', '')
+            log.error('search_link got redirect %d to %s', resp.status_code, location)
+            if location and ('/' == location or location.rstrip('/').endswith('zefoy.com') or location == '/'):
+                log.error('Redirected to homepage — API URL is invalid or session expired')
+                save_debug_html(resp.text, 'search_link_redirect.html')
+                raise RuntimeError('Session expired')
             save_debug_html(resp.text, 'search_link_redirect.html')
-            return None
+            sleep(5)
+            continue
+        if resp.url and resp.url.rstrip('/') != api_url.rstrip('/'):
+            log.warning('Response URL %s differs from request URL %s — session may be expired', resp.url, api_url)
+            save_debug_html(resp.text, 'search_link_redirect.html')
+            raise RuntimeError('Session expired')
+        if resp.status_code == 200 and len(resp.text) > 10000 and '<html' in resp.text.lower():
+            log.error('Got full HTML page (%d chars) instead of API response — API URL may be invalid', len(resp.text))
+            save_debug_html(resp.text, 'search_link_wrong_response.html')
+            raise RuntimeError('Session expired')
+
+        raw = resp.text
+        timer_raw = parse_timer(raw)
+        if timer_raw > 0:
+            log.info('Timer: %ds — waiting then retrying...', timer_raw)
+            wait_timer(timer_raw)
+            sleep(3)
+            continue
+
         try:
-            resp_text = decode(resp.text)
+            resp_text = decode(raw)
         except (binascii.Error, UnicodeDecodeError, ValueError) as e:
             log.error('Failed to decode response: %s', e)
-            save_debug_html(resp.text, 'search_link_decode_error.html')
-            return None
+            save_debug_html(raw, 'search_link_decode_error.html')
+            sleep(5)
+            continue
         log.debug('search_link decoded (first 300): %s', resp_text[:300])
 
-        if "onsubmit=\"showHideElements('.w1r','.w2r')" in resp_text:
-            matches = re.findall(r'name="([^"]*)"\s+value="([^"]*)"\s+hidden', resp_text)
+        if "onsubmit=\"showHideElements('.w1r','.w2r')" in resp_text or "onsubmit=\"fcde(" in resp_text:
+            matches = re.findall(r'name="([^"]*)"\s+value="([^"]*)"\s*(?:hidden|/\s*>)', resp_text)
+            if not matches:
+                matches = re.findall(r'type="hidden"\s+name="([^"]*)"\s+value="([^"]*)"', resp_text)
             if not matches:
                 log.error('Could not extract token/aweme_id')
                 save_debug_html(resp_text, 'search_link_no_token.html')
@@ -660,25 +1053,30 @@ def search_link(session, key, tiktok_url, api_url, field_name=None, max_retries=
             else:
                 log.debug('No timer and no form found in response')
                 save_debug_html(resp_text, 'search_link_unknown.html')
-                return None
+                sleep(5)
+                continue
 
     log.warning('Max retries (%d) reached for timer wait', max_retries)
     return None
 
 
 CSV_FILE = 'data/stats.csv'
+CSV_LOCK = threading.Lock()
 
 
 def init_csv():
-    with open(CSV_FILE, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(['timestamp', 'cycle', 'success', 'total_sent', 'elapsed_sec', 'timer_sec'])
+    os.makedirs('data', exist_ok=True)
+    if not os.path.exists(CSV_FILE):
+        with open(CSV_FILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['timestamp', 'cycle', 'success', 'total_sent', 'elapsed_sec', 'timer_sec'])
 
 
 def log_cycle(cycle, success, total_sent, elapsed, timer=0):
-    with open(CSV_FILE, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow([datetime.now().strftime('%H:%M:%S'), cycle, int(success), total_sent, f'{elapsed:.1f}', timer])
+    with CSV_LOCK:
+        with open(CSV_FILE, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([datetime.now().strftime('%H:%M:%S'), cycle, int(success), total_sent, f'{elapsed:.1f}', timer])
 
 
 def generate_chart(service_name, tiktok_url):
@@ -692,10 +1090,11 @@ def generate_chart(service_name, tiktok_url):
         return
 
     rows = []
-    with open(CSV_FILE, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
+    with CSV_LOCK:
+        with open(CSV_FILE, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
 
     if not rows:
         log.warning('No data to chart')
@@ -705,13 +1104,20 @@ def generate_chart(service_name, tiktok_url):
     totals = []
     successes = []
     timers = []
+    prev_seconds = -1
+    day_offset = 0
     for r in rows:
         h, m, s = r['timestamp'].split(':')
+        current_seconds = int(h) * 3600 + int(m) * 60 + int(s)
+        if prev_seconds >= 0 and current_seconds < prev_seconds:
+            day_offset += 1
+        prev_seconds = current_seconds
         t = datetime.now().replace(hour=int(h), minute=int(m), second=int(s), microsecond=0)
+        t = t.replace(day=t.day + day_offset) if day_offset else t
         times.append(t)
-        totals.append(int(r['total_sent']))
-        successes.append(int(r['success']))
-        timers.append(int(r['timer_sec']))
+        totals.append(int(float(r['total_sent'])))
+        successes.append(int(float(r['success'])))
+        timers.append(float(r['timer_sec']))
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), gridspec_kw={'height_ratios': [3, 1]})
     fig.suptitle(f'Zefoy Bot - {service_name}\n{tiktok_url}', fontsize=13, fontweight='bold')
@@ -733,7 +1139,13 @@ def generate_chart(service_name, tiktok_url):
     ax1.text(0.5, 0.02, info_text, transform=ax1.transAxes, ha='center', fontsize=10,
              bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
 
-    ax2.bar(times, timers, width=0.001, color='#FF5722', alpha=0.7, label='Timer (sec)')
+    if len(times) > 1:
+        diffs = [(times[i] - times[i-1]).total_seconds() for i in range(1, len(times))]
+        avg_interval = sum(diffs) / len(diffs) if diffs else 60
+        bar_width = max(0.0003, avg_interval / 86400 * 0.8)
+    else:
+        bar_width = 0.001
+    ax2.bar(times, timers, width=bar_width, color='#FF5722', alpha=0.7, label='Timer (sec)')
     ax2.set_ylabel('Timer (sec)', fontsize=11)
     ax2.set_xlabel('Time', fontsize=11)
     ax2.grid(True, alpha=0.3)
@@ -744,11 +1156,13 @@ def generate_chart(service_name, tiktok_url):
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
     plt.tight_layout()
-    chart_path = 'stats_chart.png'
+    os.makedirs('data', exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    chart_path = os.path.join('data', f'stats_chart_{timestamp}.png')
     plt.savefig(chart_path, dpi=150, bbox_inches='tight')
     plt.close()
     log.info('Chart saved: %s', chart_path)
-    print(f'{Fore.GREEN}  Grafico salvato: {os.path.abspath(chart_path)}{Fore.RESET}')
+    print(f'{Fore.GREEN}  Chart saved: {os.path.abspath(chart_path)}{Fore.RESET}')
 
 
 PROXY_FILE = 'data/proxies.txt'
@@ -756,12 +1170,12 @@ STATS_LOCK = threading.Lock()
 
 
 class GlobalStats:
-    def __init__(self, target=100000, time_limit=1800):
+    def __init__(self, target=None, time_limit=1800):
         self.total_sent = 0
         self.total_errors = 0
         self.active_workers = 0
         self.start_time = time()
-        self.target = target
+        self.target = target or CONFIG['target_views']
         self.time_limit = time_limit
         self.worker_counts = {}
 
@@ -793,14 +1207,14 @@ class GlobalStats:
 
             lines = [
                 f'\n{Fore.CYAN}{"═" * 55}',
-                f'  ⏱  Tempo: {mins}m {secs}s   |   Workers attivi: {self.active_workers}',
-                f'  📊  Progresso: [{bar}] {pct}',
-                f'  ✅  Inviate: {self.total_sent:,} / {self.target:,}   |   Rate: {rate:.0f}/min',
-                f'  ⏳  Rimanenti: {remaining:,}   |   ETA: {eta_min:.0f} min',
-                f'  ❌  Errori: {self.total_errors}',
+                f'  Time: {mins}m {secs}s   |   Active workers: {self.active_workers}',
+                f'  Progress: [{bar}] {pct}',
+                f'  Sent: {self.total_sent:,} / {self.target:,}   |   Rate: {rate:.0f}/min',
+                f'  Remaining: {remaining:,}   |   ETA: {eta_min:.0f} min',
+                f'  Errors: {self.total_errors}',
                 f'{"═" * 55}{Fore.RESET}',
             ]
-            print('\033[2J\033[H', end='')
+            clear_screen()
             print('\n'.join(lines))
 
             for wid, cnt in sorted(self.worker_counts.items()):
@@ -811,8 +1225,9 @@ class GlobalStats:
 def load_proxies():
     if not os.path.exists(PROXY_FILE):
         return []
-    with open(PROXY_FILE, 'r', encoding='utf-8') as f:
-        proxies = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+    with CSV_LOCK:
+        with open(PROXY_FILE, 'r', encoding='utf-8') as f:
+            proxies = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     shuffle(proxies)
     return proxies
 
@@ -829,10 +1244,11 @@ PROXY_APIS = [
 def fetch_free_proxies(max_proxies=50):
     log.info('Fetching free proxies from APIs...')
     raw_proxies = set()
+    session = create_session()
 
     for api_url in PROXY_APIS:
         try:
-            resp = requests.get(api_url, timeout=10, headers={'User-Agent': USER_AGENT})
+            resp = http_request(session, 'GET', api_url, max_retries=1, timeout=10)
             if resp.status_code == 200:
                 lines = resp.text.strip().split('\n')
                 for line in lines:
@@ -841,9 +1257,9 @@ def fetch_free_proxies(max_proxies=50):
                         if not line.startswith('http'):
                             line = f'http://{line}'
                         raw_proxies.add(line)
-                log.debug('Got %d proxies from %s', len(lines), api_url.split('/')[2])
+                log.debug('Got %d proxies from %s', len(lines), api_url.split('/')[2] if len(api_url.split('/')) > 2 else api_url)
         except Exception as e:
-            log.debug('Failed to fetch from %s: %s', api_url.split('/')[2], e)
+            log.debug('Failed to fetch from %s: %s', api_url.split('/')[2] if len(api_url.split('/')) > 2 else api_url, e)
         if len(raw_proxies) >= max_proxies * 2:
             break
 
@@ -908,6 +1324,17 @@ class WorkerThread:
             if name != 'field_name':
                 self.session.cookies.set(name, value, domain='zefoy.com')
         self.key = self.field_name
+        try:
+            resp = http_request(self.session, 'GET', ZEFOY_URL, max_retries=2)
+            html = resp.text
+            extracted_key = extract_key_from_html(html)
+            if extracted_key:
+                self.key = extracted_key
+                self.log('info', 'Session validated, key: %s', self.key)
+            else:
+                self.log('warning', 'Session set but could not extract key')
+        except Exception as e:
+            self.log('warning', 'Session validation failed: %s', e)
 
     def try_reconnect(self):
         self.reconnects += 1
@@ -916,20 +1343,27 @@ class WorkerThread:
             return False
 
         if self.phpsessid_pool:
-            phpsessid = self.phpsessid_pool[self.reconnects % len(self.phpsessid_pool)]
-            self.session = create_session(self.proxy)
-            self.session.cookies.set('PHPSESSID', phpsessid, domain='zefoy.com')
-            self.log('info', 'Reconnected with PHPSESSID (attempt %d)', self.reconnects)
-            try:
-                resp = http_request(self.session, 'GET', ZEFOY_URL)
-                html = resp.text
-                key = extract_key_from_html(html)
-                if key:
-                    self.key = key
-                    self.log('info', 'Session restored')
-                    return True
-            except Exception as e:
-                self.log('error', 'Reconnect failed: %s', e)
+            attempts = 0
+            while attempts < len(self.phpsessid_pool):
+                phpsessid = self.phpsessid_pool[self.reconnects % len(self.phpsessid_pool)]
+                self.reconnects += 1
+                attempts += 1
+                self.session = create_session(self.proxy)
+                self.session.cookies.set('PHPSESSID', phpsessid, domain='zefoy.com')
+                self.log('info', 'Trying PHPSESSID (attempt %d/%d)', attempts, len(self.phpsessid_pool))
+                try:
+                    resp = http_request(self.session, 'GET', ZEFOY_URL, max_retries=1)
+                    html = resp.text
+                    key = extract_key_from_html(html)
+                    if key:
+                        self.key = key
+                        self.log('info', 'Session restored with PHPSESSID')
+                        return True
+                    else:
+                        self.log('debug', 'PHPSESSID %s did not yield key, trying next', phpsessid[:8])
+                except Exception as e:
+                    self.log('debug', 'PHPSESSID %s failed: %s', phpsessid[:8], e)
+            self.log('warning', 'All PHPSESSIDs in pool are stale')
         else:
             self.log('warning', 'No PHPSESSID pool, worker stopping')
         return False
@@ -959,6 +1393,7 @@ class WorkerThread:
                 self.log('info', 'Time limit reached, stopping')
                 break
 
+            cycle_start = time()
             try:
                 result = search_link(self.session, self.key, self.tiktok_url,
                                      self.api_url, self.field_name)
@@ -966,13 +1401,17 @@ class WorkerThread:
                     self.count += 1
                     self.global_stats.add_sent(self.worker_id)
                     self.errors = 0
+                    PROXY_HEALTH.record(self.proxy, True)
+                    SQLITE_STATS.log_cycle(cycle, True, self.global_stats.total_sent,
+                                           time() - self.global_stats.start_time,
+                                           0, self.worker_id, self.service_name)
                     set_window_title(
                         f'Zefoy Bot | Views Generated: {format_number(self.global_stats.total_sent)} | '
                         f'Active Workers: {self.global_stats.active_workers} | '
                         f'Rate: {self.global_stats.total_sent / ((time() - self.global_stats.start_time) / 60):.0f}/min'
                     )
                 else:
-                    pass
+                    PROXY_HEALTH.record(self.proxy, False)
             except RuntimeError as e:
                 if 'Session expired' in str(e):
                     self.log('warning', 'Session expired, reconnecting...')
@@ -980,12 +1419,14 @@ class WorkerThread:
                         continue
                     else:
                         self.running = False
+                        notify_desktop('Zefoy Bot', f'Worker {self.worker_id}: Session expired, stopping')
                         break
                 self.log('error', 'Fatal: %s', e)
                 break
             except Exception as e:
                 self.errors += 1
                 self.global_stats.add_error()
+                PROXY_HEALTH.record(self.proxy, False)
                 self.log('error', 'Error cycle %d: %s', cycle, e)
                 if self.errors >= MAX_ERRORS:
                     self.log('warning', 'Too many errors, trying reconnect...')
@@ -993,15 +1434,17 @@ class WorkerThread:
                         self.errors = 0
                         continue
                     else:
+                        notify_desktop('Zefoy Bot', f'Worker {self.worker_id}: Too many errors, stopping')
                         break
-            sleep(5)
+            sleep_delay = max(1, RATE_LIMITER.get_delay() - (time() - cycle_start))
+            sleep(sleep_delay)
 
         self.log('info', 'Worker stopped. Sent: %d', self.count)
         return self.count
 
 
 def run_multi_thread(tiktok_url, num_threads, proxy_list, service_choice, api_url, field_name, cookies, phpsessid_pool=None, time_limit=1800):
-    stats = GlobalStats(target=100000, time_limit=time_limit)
+    stats = GlobalStats(time_limit=time_limit)
 
     workers = []
     for i in range(num_threads):
@@ -1033,17 +1476,20 @@ def run_multi_thread(tiktok_url, num_threads, proxy_list, service_choice, api_ur
     rate = stats.total_sent / (elapsed_total / 60) if elapsed_total > 0 else 0
 
     print(f'{Fore.CYAN}{"═" * 55}')
-    print(f'  RIEPILOGO FINALE')
+    print(f'  FINAL SUMMARY')
     print(f'{"═" * 55}')
     print(f'  Workers:    {num_threads}')
-    print(f'  Proxy:      {len(proxy_list)} caricati')
-    print(f'  Totale:     {stats.total_sent:,} views')
-    print(f'  Tempo:      {mins}m {secs}s')
+    print(f'  Proxies:    {len(proxy_list)} loaded')
+    print(f'  Total:      {stats.total_sent:,} views')
+    print(f'  Time:       {mins}m {secs}s')
     print(f'  Rate:       {rate:.1f} views/min')
+    target = stats.target
     if rate > 0:
-        print(f'  Target 100k: ~{100000 / rate:.0f} minuti')
+        print(f'  Target {format_number(target)}: ~{target / rate:.0f} min')
     print(f'{"═" * 55}{Fore.RESET}\n')
 
+    SQLITE_STATS.log_session_end(SERVICES[service_choice]['name'], stats.total_sent, elapsed_total)
+    notify_desktop('Zefoy Bot', f'Done: {stats.total_sent:,} {SERVICES[service_choice]["name"].lower()} in {mins}m {secs}s')
     log.info('Multi-thread done: %d total in %dm %ds (%.1f/min)', stats.total_sent, mins, secs, rate)
     generate_chart(SERVICES[service_choice]['name'], tiktok_url)
     return stats.total_sent
@@ -1063,9 +1509,59 @@ def dashboard_loop(stats):
 # Main
 # ============================================================
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Zefoy TikTok ViewBot v4', formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Examples:\n  python zefoy_bot.py --url https://vm.tiktok.com/XXX --method 2 --threads 5\n  python zefoy_bot.py --url https://vm.tiktok.com/XXX --service 6 --time 60\n  python zefoy_bot.py --url https://vm.tiktok.com/XXX --method 2 --phpsessid abc123')
+    parser.add_argument('--url', '-u', help='TikTok video URL')
+    parser.add_argument('--method', '-m', choices=['1', '2'], default=None, help='Captcha method: 1=Selenium, 2=Cookie (default: interactive)')
+    parser.add_argument('--service', '-s', choices=['1','2','3','4','5','6','7','8'], default=None, help='Service number (auto-select if available)')
+    parser.add_argument('--threads', '-t', type=int, default=None, help='Number of threads (default: 1)')
+    parser.add_argument('--time', type=int, default=None, help='Time limit in minutes (default: 30)')
+    parser.add_argument('--proxy', '-p', default=None, help='Proxy (ip:port or url)')
+    parser.add_argument('--phpsessid', default=None, help='PHPSESSID for cookie method')
+    parser.add_argument('--config', default=None, help='Path to config JSON file')
+    parser.add_argument('--target', type=int, default=None, help='Target views count (default: from config)')
+    parser.add_argument('--max-cycles', type=int, default=None, help='Max cycles (default: from config)')
+    parser.add_argument('--json-log', action='store_true', default=None, help='Enable JSON logging')
+    parser.add_argument('--list-services', action='store_true', help='List available services and exit')
+    return parser.parse_args()
+
+
 def main():
+    global CONFIG, MAX_CYCLES, MAX_ERRORS
+    args = parse_args()
     clear_terminal()
+
+    if args.config:
+        if os.path.exists(args.config):
+            try:
+                with open(args.config, 'r', encoding='utf-8') as f:
+                    CONFIG.update(json.load(f))
+                log.info('Loaded config from %s', args.config)
+            except Exception as e:
+                log.error('Failed to load config %s: %s', args.config, e)
+                return
+        else:
+            log.error('Config file not found: %s', args.config)
+            return
+
+    if args.target:
+        CONFIG['target_views'] = args.target
+    if args.max_cycles:
+        CONFIG['max_cycles'] = args.max_cycles
+    if args.json_log:
+        CONFIG['json_logging'] = True
+        setup_json_logging()
+    MAX_CYCLES = CONFIG['max_cycles']
+    MAX_ERRORS = CONFIG['max_errors']
     
+    if args.list_services:
+        print(f'\n{Fore.CYAN}Available Zefoy Services:{Fore.RESET}')
+        for num, svc in SERVICES.items():
+            print(f'  [{num}] {svc["name"]}')
+        print(f'\n{Fore.WHITE}Use --service <number> to auto-select{Fore.RESET}')
+        return
+
     if HAS_PYFIGLET:
         print(f'{Fore.CYAN}{pyfiglet.figlet_format("Zefoy Bot", font="slant")}{Fore.RESET}')
     else:
@@ -1089,7 +1585,7 @@ def main():
   {Fore.CYAN}[8]{Fore.WHITE} Increase Repost
 {Fore.RESET}''')
 
-    tiktok_url = input('TikTok URL: ').strip()
+    tiktok_url = args.url or input('TikTok URL: ').strip()
     if not tiktok_url:
         log.error('No URL provided')
         return
@@ -1097,20 +1593,27 @@ def main():
         log.error('Invalid TikTok URL (must be from vm.tiktok.com, tiktok.com, or vt.tiktok.com)')
         return
 
-    print(f"""
+    if args.method:
+        method = args.method
+    else:
+        print(f"""
 {Fore.WHITE}Captcha solving method:
   {Fore.CYAN}[1]{Fore.WHITE} Selenium (default) - opens Chrome, solve captcha there
   {Fore.CYAN}[2]{Fore.WHITE} Manual cookie      - paste PHPSESSID from browser{Fore.RESET}
 """)
-    method = input(f'Choose method [1]: ').strip() or '1'
-    if method not in ('1', '2'):
-        log.warning('Invalid method "%s", defaulting to Selenium (1)', method)
-        method = '1'
+        method = input(f'Choose method [1]: ').strip() or '1'
+        if method not in ('1', '2'):
+            log.warning('Invalid method "%s", defaulting to Selenium (1)', method)
+            method = '1'
 
-    threads_input = input('Threads (default 1, multi-thread mode): ').strip()
-    num_threads = int(threads_input) if threads_input.isdigit() and threads_input.isascii() and int(threads_input) > 0 else 1
+    if args.threads is not None:
+        num_threads = max(1, min(args.threads, CONFIG['max_threads']))
+    else:
+        threads_input = input('Threads (default 1, multi-thread mode): ').strip()
+        num_threads = int(threads_input) if threads_input.isdigit() and threads_input.isascii() and int(threads_input) > 0 else 1
+        num_threads = min(num_threads, CONFIG['max_threads'])
 
-    proxy = None
+    proxy = args.proxy
     proxy_list = []
     if num_threads > 1:
         proxy_list = load_proxies()
@@ -1129,13 +1632,32 @@ def main():
                 log.info('Create proxies.txt with format: ip:port (one per line)')
         else:
             log.info('Loaded %d proxies from proxies.txt', len(proxy_list))
-        proxy = proxy_list[0] if proxy_list else None
-    else:
-        proxy = input('Proxy (optional, format: ip:port or press Enter): ').strip() or None
+        if not proxy:
+            proxy = proxy_list[0] if proxy_list else None
+    elif not proxy:
+        if args.url and args.service and args.method and args.threads is not None:
+            log.info('No proxy provided, running without proxy')
+        elif sys.stdin.isatty():
+            proxy = input('Proxy (optional, format: ip:port or press Enter): ').strip() or None
 
     log.info('Starting Zefoy bot...')
 
-    if method == '2':
+    if method == '2' and args.phpsessid:
+        session = create_session(proxy)
+        session.cookies.set('PHPSESSID', args.phpsessid, domain='zefoy.com')
+        log.info('Verifying session...')
+        try:
+            resp = http_request(session, 'GET', ZEFOY_URL)
+            html = resp.text
+            key = extract_key_from_html(html)
+            if not key:
+                log.error('PHPSESSID from CLI is invalid')
+                return
+            log.info('Session valid! Key: %s', key)
+        except Exception as e:
+            log.error('Session verification failed: %s', e)
+            return
+    elif method == '2':
         session, key = solve_with_cookie(proxy)
     else:
         session, key = solve_with_selenium(proxy)
@@ -1156,37 +1678,53 @@ def main():
 
     available = show_services(html)
     if not available:
-        log.error('No services available right now')
+        log.error('No services available right now — zefoy.com may be down')
         return
-    while True:
-        choice = input(f'Choose service {available}: ').strip()
-        if choice in available:
-            break
-        log.warning('Invalid choice. Available: %s', available)
+    if args.service:
+        if args.service in available:
+            choice = args.service
+            log.info('Auto-selected service: %s', SERVICES[choice]['name'])
+        else:
+            svc_info = SERVICES.get(args.service, {})
+            svc_name = svc_info.get('name', f'Service #{args.service}')
+            log.error('Service %s (%s) is currently DISABLED on zefoy.com', args.service, svc_name)
+            log.info('Available services: %s', ', '.join(f'{n}={SERVICES[n]["name"]}' for n in available))
+            log.info('Try: --service %s (Comments) or --service %s (Favorites)', available[0], available[-1])
+            return
+    else:
+        while True:
+            choice = input(f'Choose service {available}: ').strip()
+            if choice in available:
+                break
+            log.warning('Invalid choice. Available: %s', available)
 
     svc = SERVICES[choice]
     api_url, field_name = extract_service_form(html, svc['menu'])
     if not api_url or not field_name:
-        log.warning('Could not extract form for %s, using default API URL', svc['name'])
-        api_url = API_URL
-        field_name = None
+        log.error('Could not extract form for %s — cannot proceed', svc['name'])
+        log.info('Try refreshing session or choose another service')
+        return
     else:
         log.info('Service form: url=%s field=%s', api_url, field_name)
 
     log.info('Selected: %s', SERVICES[choice]['name'])
 
     if num_threads > 1:
-        time_input = input('Time limit in minutes (default 30): ').strip()
-        time_limit = int(time_input) * 60 if time_input.isdigit() and int(time_input) > 0 else 1800
+        if args.time is not None:
+            time_limit = max(60, min(args.time * 60, CONFIG['max_time_limit_hours'] * 3600))
+        else:
+            time_input = input('Time limit in minutes (default 30): ').strip()
+            time_limit = int(time_input) * 60 if time_input.isdigit() and int(time_input) > 0 else 1800
+            time_limit = min(time_limit, CONFIG['max_time_limit_hours'] * 3600)
 
         phpsessid_pool = []
         if method == '2':
             phpsessid = session.cookies.get('PHPSESSID', '')
             if phpsessid:
                 phpsessid_pool.append(phpsessid)
-            print(f'\n{Fore.YELLOW}Multi-session mode: paste altri PHPSESSID (uno per riga, vuoto per terminare):{Fore.RESET}')
+            print(f'\n{Fore.YELLOW}Multi-session mode: paste additional PHPSESSID (one per line, empty to finish):{Fore.RESET}')
             while True:
-                extra = input('  PHPSESSID extra (o INVIO per terminare): ').strip()
+                extra = input('  PHPSESSID extra (or ENTER to finish): ').strip()
                 if not extra:
                     break
                 phpsessid_pool.append(extra)
@@ -1216,12 +1754,15 @@ def main():
                 if result:
                     count += 1
                     log.info('Sent #%d (cycle %d/%d)', count, cycle, MAX_CYCLES)
+                    PROXY_HEALTH.record(proxy, True)
                     errors = 0
                 else:
+                    PROXY_HEALTH.record(proxy, False)
                     log.debug('Cycle %d/%d - no result', cycle, MAX_CYCLES)
             except RuntimeError as e:
                 if 'Session expired' in str(e):
                     log.warning('Session expired, re-solving captcha...')
+                    notify_desktop('Zefoy Bot', 'Session expired, re-solving captcha...')
                     if method == '2':
                         session, key = solve_with_cookie(proxy)
                     else:
@@ -1229,15 +1770,27 @@ def main():
                     if not key:
                         log.error('Reconnect failed')
                         break
+                    try:
+                        resp = http_request(session, 'GET', ZEFOY_URL)
+                        html = resp.text
+                        new_api_url, new_field = extract_service_form(html, SERVICES[choice]['menu'])
+                        if new_api_url and new_field:
+                            api_url = new_api_url
+                            field_name = new_field
+                            log.info('Service form refreshed: url=%s field=%s', api_url, field_name)
+                    except Exception:
+                        pass
                     errors = 0
                     continue
                 log.error('Fatal error: %s', e)
                 break
             except Exception as e:
                 errors += 1
+                PROXY_HEALTH.record(proxy, False)
                 log.error('Error at cycle %d: %s', cycle, e)
                 if errors >= MAX_ERRORS:
                     log.error('Too many errors, re-solving captcha...')
+                    notify_desktop('Zefoy Bot', 'Too many errors, re-solving captcha...')
                     if method == '2':
                         session, key = solve_with_cookie(proxy)
                     else:
@@ -1249,12 +1802,16 @@ def main():
             cycle_timer = time() - cycle_start
             elapsed = time() - start_time
             log_cycle(cycle, result is True, count, elapsed, cycle_timer)
-            sleep(5)
+            SQLITE_STATS.log_cycle(cycle, result is True, count, elapsed, cycle_timer, 0, SERVICES[choice]['name'])
+            sleep_delay = max(1, RATE_LIMITER.get_delay() - cycle_timer)
+            sleep(sleep_delay)
 
         elapsed_total = time() - start_time
         mins, secs = divmod(int(elapsed_total), 60)
         log.info('Done. Total sent: %d in %dm %ds', count, mins, secs)
-        print(f'\n{Fore.CYAN}  Riepilogo: {count} views in {mins}m {secs}s{Fore.RESET}')
+        print(f'\n{Fore.CYAN}  Summary: {count} views in {mins}m {secs}s{Fore.RESET}')
+        SQLITE_STATS.log_session_end(SERVICES[choice]['name'], count, elapsed_total)
+        notify_desktop('Zefoy Bot', f'Done: {count} views in {mins}m {secs}s')
         generate_chart(SERVICES[choice]['name'], tiktok_url)
 
 

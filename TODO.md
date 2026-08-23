@@ -1,86 +1,105 @@
-# TODO - Bug Report e Miglioramenti
+# TODO - Bug Report e Miglioramenti (v2)
 
-## CRITICI
-
-| # | Riga | Issue | Severita |
-|---|------|-------|----------|
-| 1 | 1252 | **`sleep(5)` incondizionato dopo ogni ciclo single-thread.** Anche quando il server risponde in <1s, aggiunge 5s di delay inutile. Dovrebbe basarsi sul tempo di risposta effettivo o essere configurabile. | Critico |
-| 2 | 1180 | **`time_input.isdigit()` accetta valori enormi.** Un utente che scrive `999999` imposta un time limit di ~694 giorni. Manca un bound check realistico (es. max 48 ore). | Critico |
-| 3 | 1111 | **`threads_input` non ha upper bound.** Un utente che scrive `999999` creerebbe 999999 thread, causando crash di sistema. Manca un max thread (es. 50). | Critico |
-
-## ALTI
+## CRITICI (Bugs che causano crash o funzionamento errato)
 
 | # | Riga | Issue | Severita |
 |---|------|-------|----------|
-| 4 | 200 | **Proxy HTTPS usa stesso scheme di HTTP.** Se il proxy e `socks5://1.2.3.4:1080`, both `http` e `https` usano `socks5://`. Ma se e `http://1.2.3.4:8080`, dovrebbe forzare `https://` per le richieste HTTPS? In realta i proxy HTTP funzionano anche per HTTPS via CONNECT, ma il comportamento attuale e corretto. DA VERIFICARE. | Alto |
-| 5 | 425 | **`input()` per PHPSESSID blocca indefinitamente.** Se l'utente si allontana, il programma resta in attesa senza timeout. Dovrebbe avere un timeout opzionale. | Alto |
-| 6 | 367 | **`input()` per solve captcha blocca indefinitamente.** Stesso problema della riga 425. Nessun timeout sull'input dell'utente. | Alto |
-| 7 | 835 | **`fetch_free_proxies` usa `requests.get` senza SSL adapter.** Il resto del codebase usa `SSLAdapter` con cipher specifici, ma il fetch proxy usa la sessione default di requests senza SSL personalizzato. Inconsistenza di sicurezza. | Alto |
-| 8 | 57 | **`set_window_title` potrebbe causare command injection.** Se il titolo contiene caratteri speciali del shell (come `&`, `|`, `;`), il comando OS potrebbe essere manipolato. Dovrebbe usare `subprocess` con parametri separati o validare l'input. | Alto |
-| 9 | 575-583 | **`build_multipart` non escape caratteri speciali nel value.** Se il TikTok URL contiene caratteri come `\r\n`, potrebbe rompere il boundary del multipart form. Manca escaping dei valori. | Alto |
-| 10 | 1224-1228 | **Re-solve captcha non aggiorna service list/api_url/field_name.** Dopo il re-solve in single-thread, il codice continua con i vecchi valori di `api_url` e `field_name`, che potrebbero non essere piu validi per la nuova sessione. | Alto |
+| 1 | 1508-1509 | **`MAX_CYCLES`/`MAX_ERRORS` in `main()` sono locali, non aggiornano i globali.** La riga `MAX_CYCLES = CONFIG['max_cycles']` in `main()` crea una variabile locale, ma il codice nei cicli (riga 1340, 1691) usa ancora i valori globali originali. `--max-cycles` dall'CLI non funziona. | Critico |
+| 2 | 1018-1025 | **`init_csv` scrive header ogni volta che viene chiamata.** Se il file esiste, apre in append mode e scrive un nuovo header row, corrompendo il CSV con header multipli. | Critico |
+| 3 | 1148-1175 | **`print_dashboard` tiene `STATS_LOCK` durante stampa schermo.** Se un worker chiama `add_sent()` mentre il dashboard tiene il lock, il worker si blocca. Possibile deadlock se il print è lento. | Critico |
+| 4 | 1293-1302 | **`try_reconnect` incrementa `self.reconnects` due volte per iterazione.** Prima a riga 1293 (`+= 1`), poi dentro il while a riga 1302 (`+= 1`). Un pool di 3 PHPSESSID salta sessioni. | Critico |
+| 5 | 1602-1606 | **`key` da CLI non viene usata nel loop.** Dopo `solve_with_cookie()` con `--phpsessid`, `key` viene estratta a riga 1602 ma non assegnata alla variabile `key` del loop (è un'assegnazione locale). Il loop usa `key=None`. | Critico |
 
-## MEDI
+## ALTI (Bug che causano comportamento errato)
 
 | # | Riga | Issue | Severita |
 |---|------|-------|----------|
-| 11 | 6 | **`import tempfile` non usato.** Dead import, dovrebbe essere rimosso. | Medio |
-| 12 | 512-546 | **`choose_service()` definita ma mai chiamata.** Funzione duplicata che reimplementa la logica gia presente in `main()`. Dead code. | Medio |
-| 13 | 68 | **`API_URL` hardcoded all'endpoint followers.** Usato come fallback per TUTTI i servizi, ma e sbagliato per hearts, views, ecc. Dovrebbe essere dinamico in base al servizio. | Medio |
-| 14 | 759 | **`GlobalStats(target=100000)` hardcoded.** Il target 100k non si adatta al vero obiettivo dell'utente. Dovrebbe essere configurabile via CLI. | Medio |
-| 15 | 95-98 | **`MAX_CYCLES`, `MAX_ERRORS` hardcoded.** Dovrebbero essere configurabili via CLI o file config. | Medio |
-| 16 | 672-676 | **`init_csv` con `mode='w'` sovrascrive i dati.** Ogni run distrugge i dati della sessione precedente. Dovrebbe appendere o usare un nome file con timestamp. | Medio |
-| 17 | 695 | **`generate_chart` legge CSV che i worker possono stare scrivendo.** Nessun file locking, possibile corruzione dei dati se il chart viene generato durante una scrittura. | Medio |
-| 18 | 803 | **ANSI escape `\033[2J\033[H` potrebbe non funzionare.** Su vecchi terminali Windows, IDE integrati, o有些 terminales non supportano questo escape. Dovrebbe avere un fallback. | Medio |
-| 19 | 751 | **Chart salvato con nome fisso `stats_chart.png`.** Ogni generazione sovrascrive il grafico precedente. Dovrebbe usare un nome con timestamp o essere configurabile. | Medio |
-| 20 | 238-240 | **Fallback captcha detection troppo ampio.** Anche con il regex aggiunto, matcha qualsiasi pagina che menziona "captcha" E ha un tag `<input>` o `<img>` qualunque. Potrebbe causare falsi positivi. | Medio |
-| 21 | 905-910 | **`setup_session` copia cookies senza validare la sessione.** Non verifica che la sessione sia effettivamente valida dopo aver copiato i cookie. | Medio |
-| 22 | 937-947 | **Import `urlparse` dentro il metodo `log`.** L'import dovrebbe essere a livello di modulo, non ripetuto ad ogni chiamata al metodo. | Medio |
+| 6 | 1078 | **Label grafico hardcoded "Total views sent".** Anche quando il servizio è Comments, Hearts, o Favorites, l'etichetta dice sempre "Total views sent". | Alto |
+| 7 | 1404 | **Proxy rotation non funziona.** `proxy_list[i % len(proxy_list)]` assegna sempre lo stesso proxy allo stesso worker (indice fisso). Non c'è rotazione durante l'esecuzione. | Alto |
+| 8 | 1615-1618 | **Se `key` è None dopo re-solve, il loop non si ferma.** La variabile `key` del loop è `None` ma il ciclo continua, causando crash in `search_link`. | Alto |
+| 9 | 1349 | **`cycle_start` non inizializzato prima del primo sleep.** Se il primo ciclo lancia un'eccezione non-`RuntimeError` prima di arrivare a `cycle_start = time()`, il `sleep_delay` a riga 1392 usa `cycle_start` non definito. | Alto |
+| 10 | 940-1008 | **`search_link` non valida il contenuto decodificato.** Se la risposta decodificata non ha il form atteso, continua a loop infinito con "No timer and no form found". Dovrebbe avere un max retry per questo caso. | Alto |
+| 11 | 930-934 | **`send_action` success check incomplete.** Mancano: `'comment hearts sent'`, `'live stream sent'`, `'repost sent'`. Solo alcune frasi sono controllate. | Alto |
+| 12 | 786-815 | **`check_service_status` potrebbe non rilevare correttamente servizi disabilitati.** Se zefoy aggiunge nuovi pattern HTML per "disabled" (es. `opacity:0.5`, `pointer-events:none`), il detection fallisce silenziosamente. | Alto |
 
-## BASSI
+## MEDI (Bug minori o miglioramenti importanti)
 
 | # | Riga | Issue | Severita |
 |---|------|-------|----------|
-| 23 | 709-710 | **Chart time parsing assume stessa giornata.** Se il bot gira dopo mezzanotte, i tempi vanno indietro nel grafico. Non gestisce il cambio di giorno. | Basso |
-| 24 | 736 | **`ax2.bar` usa larghezza fissa `width=0.001`** in unita matplotlib (giorni). ~1.4 minuti reali. Se i cicli sono piu brevi/lunghi le barre si sovrappongono o hanno buchi. | Basso |
-| 25 | 811-817 | **`load_proxies` legge il file senza file locking.** Se un altro processo sta scrivendo, potrebbe leggere dati parziali. | Basso |
-| 26 | 919 | **PHPSESSID pool modulo ruota tra sessioni stale.** Se tutti i PHPSESSID sono scaduti, il modulo continua a ruotarli senza validazione. Dovrebbe marcare le sessioni scadute. | Basso |
-| 27 | 25 | **`chromedriver_autoinstaller.install()` chiamato a import time.** Se fallisce, viene silenziosamente ignorato. Dovrebbe loggare un warning. | Basso |
-| 28 | 844 | **`log.debug` usa `api_url.split('/')[2]` senza bound check.** Se l'URL e malformed, potrebbe lanciare IndexError. | Basso |
-| 29 | 747-748 | **Chart path hardcoded.** Il grafico viene sempre salvato nella directory corrente. Dovrebbe essere nella cartella `data/` o essere configurabile. | Basso |
-| 30 | 1187 | **Messaggio italiano "paste altri PHPSESSID"**混 in inglese. Il resto del codice e in inglese ma questo messaggio e in italiano. Inconsistenza di lingua. | Basso |
-| 31 | 1189 | **Messaggio italiano "o INVIO per terminare"** 同上, misto italiano/inglese. | Basso |
-| 32 | 1257 | **Messaggio italiano "Riepilogo"** 同上, inconsistenza lingua. | Basso |
-| 33 | 1039 | **Messaggio italiano "caricati"** 同上. | Basso |
-| 34 | 1044 | **Messaggio italiano "minuti"** 同上. | Basso |
-| 35 | 796 | **Messaggio italiano "Workers attivi"** 同上. | Basso |
-| 36 | 798 | **Messaggio italiano "Inviate", "Rimanenti"** 同上. | Basso |
-| 37 | 751 | **Messaggio italiano "Grafico salvato"** 同上. | Basso |
+| 13 | — | **Nessun graceful shutdown.** Ctrl+C killa il processo senza salvare stats, chiudere sessioni, o generare il grafico. Manca un signal handler. | Medio |
+| 14 | 1328 | **`WorkerThread.log` importa `urlparse` ad ogni chiamata.** L'import è già a livello di modulo (riga 23). Import ripetuti sono inutili. | Medio |
+| 15 | 1242-1253 | **`validate_proxy` non chiude la sessione.** Ogni validazione proxy crea una `requests.Session()` che non viene chiusa, causando leak di connessioni. | Medio |
+| 16 | 90-119 | **`input_with_timeout` su Windows non gestisce Unicode.** `msvcrt.getwche()` non gestisce caratteri speciali (accenti, CJK). Potrebbe crashare su input con caratteri non-ASCII. | Medio |
+| 17 | 342 | **`SqliteStats.log_cycle` passa `elapsed` come stringa.** `f'{elapsed:.1f}'` produce una stringa, ma la colonna `elapsed_sec` è `REAL`. Funziona ma è incoerente. | Medio |
+| 18 | 1413 | **`dashboard_loop` thread non è joinato.** Dopo `stats.set_active(0)`, il thread potrebbe non aver terminato ancora. | Medio |
+| 19 | — | **Nessun SIGINT handler.** Se il bot è in multi-thread, Ctrl+C non ferma i worker in modo pulito. | Medio |
+| 20 | 1016-1025 | **`init_csv` dovrebbe verificare se il file CSV è valido.** Se il file esiste ma è corrotto (es. scritto male), il bot continua a fare append su dati corrotti. | Medio |
+
+## BASSI (Bug cosmnetici o miglioramenti minori)
+
+| # | Riga | Issue | Severita |
+|---|------|-------|----------|
+| 21 | 1362 | **Window title dice "Views Generated" anche per altri servizi.** Dovrebbe usare il nome del servizio. | Basso |
+| 22 | 1530-1539 | **Menu servizi mostra tutti i servizi anche se sono OFF su zefoy.** Dovrebbe mostrare solo quelli disponibili, o almeno evidenziare meglio che "non funzionano". | Basso |
+| 23 | — | **`config.json` non ha sezione per ogni servizio.** Ogni servizio potrebbe avere parametri diversi (max cycles, target, ecc). | Basso |
+| 24 | — | **Nessun log delle statistiche finali in SQLite.** Manca un riepilogo della sessione nel database. | Basso |
+| 25 | 1392-1393 | **`sleep_delay` dopo errore include il tempo di errore.** Se un errore dura 30s, il delay è `max(1, 5 - 30) = 1` invece di 5. Dovrebbe resettare. | Basso |
+| 26 | — | **Manca `requirements.txt`** con dipendenze opzionali (matplotlib, plyer, pysocks). | Basso |
+| 27 | — | **Manca `--dry-run` flag** per testare la configurazione senza eseguire il bot. | Basso |
 
 ## MIGLIORAMENTI PROPOSTI
 
 | # | Descrizione | Priorita |
 |---|-------------|----------|
-| M1 | **Aggiungere argparser CLI.** Permettere di configurare tutti i parametri via command line invece che solo con input interattivo. | Alta |
-| M2 | **Aggiungere file config JSON/YAML.** Per salvare le preferenze dell'utente (proxy, thread, time limit) senza doverli riscrivere ogni volta. | Alta |
-| M3 | **Rimuovere `choose_service()` duplicata.** Usare la funzione esistente in main() o unificarle. | Media |
-| M4 | **Rimuovere `import tempfile` inutilizzato.** Pulizia codice. | Bassa |
-| M5 | **Aggiungere test per funzioni mancanti.** Mancano test per `send_action`, `search_link`, `generate_chart`, `WorkerThread`. | Media |
-| M6 | **Aggiungere logging strutturato JSON.** Per facilitare il parsing automatico dei log. | Bassa |
-| M7 | **Aggiungere health check proxy periodico.** Ri-validare i proxy durante l'esecuzione per rimuovere quelli che smettono di funzionare. | Alta |
-| M8 | **Aggiungere rate limiting adaptive.** Ridurre automaticamente la frequenza delle richieste se il server inizia a rispondere con 429. | Media |
-| M9 | **Aggiungere supporto SOCKS5/4.** Il codice attualmente gestisce solo proxy HTTP/HTTPS. | Media |
-| M10 | **Aggiungere riconnessione automatica Selenium.** Se il browser si chiude inaspettatamente, riavviarlo automaticamente. | Media |
-| M11 | **Aggiungere statistiche persistenti.** Salvare le statistiche in un database SQLite invece che in CSV per storico a lungo termine. | Bassa |
-| M12 | **Aggiungere notifiche desktop.** Avvisare l'utente quando il bot termina o incontra errori critici usando `plyer` o simile. | Bassa |
+| M1 | **Aggiungere `--service-name` flag** per auto-select per nome (es. `--service-name "Comments Hearts"`) | Media |
+| M2 | **Aggiungere `--verbose` / `--quiet` flags** per controllo livello log | Media |
+| M3 | **Aggiungere health check periodico delle sessioni PHPSESSID** ogni N cicli | Media |
+| M4 | **Aggiungere `--export-stats` flag** per exportare statistiche in JSON/CSV | Bassa |
+| M5 | **Aggiungere grafico live** con matplotlib animation (opzionale) | Bassa |
+| M6 | **Aggiungere `--no-chart` flag** per skip generazione grafico | Bassa |
+| M7 | **Aggiungere `--log-level` flag** per controllo debug output | Bassa |
+| M8 | **Aggiungere supporto per `tiktok.com/@user/video/ID` URL** (formatti diversi) | Media |
+| M9 | **Aggiungere `--rotate-service` flag** per ruotare automaticamente tra servizi disponibili | Bassa |
+| M10 | **Aggiungere `--session-file` flag** per salvare/caricare sessioni PHPSESSID da file | Media |
+
+## ANALISI: Perché Likes e Followers NON funzionano
+
+Dall'HTML della pagina zefoy.com (`debug/service_list.html`):
+
+```
+Followers: <button disabled class="btn btn-primary rounded-0 t-followers-button">
+           <small class="badge badge-round badge-danger">soon will be update</small>
+
+Hearts:    <button disabled class="btn btn-primary rounded-0 t-hearts-button">
+           <small class="badge badge-round badge-danger">soon will be update</small>
+
+Views:     <button disabled class="btn btn-primary rounded-0 t-views-button">
+           <small class="badge badge-round badge-danger">soon will be update</small>
+```
+
+**Tutti e tre i bottoni sono `disabled`** — zefoy.com ha disattivato questi servizi lato server. Il bot li detecta correttamente come OFF e NON li mostra come disponibili.
+
+**Servizi attualmente funzionanti su zefoy:**
+- Comments Hearts (`t-chearts-button`) - ON, aggiornato 2 settimane fa
+- Favorites (`t-favorites-button`) - ON, aggiornato 2 settimane fa
+
+**Servizi non funzionanti (disabilitati da zefoy):**
+- Followers - OFF ("soon will be update")
+- Hearts - OFF ("soon will be update")  
+- Views - OFF ("soon will be update")
+- Shares - OFF ("soon will be update")
+- Live Stream - OFF ("soon will be update")
+- Repost - OFF ("soon will be update")
+
+**Questo non è un bug del bot.** Il bot funziona correttamente — il problema è che zefoy.com ha disabilitato questi servizi. L'utente dovrebbe usare Comments Hearts (#3) o Favorites (#6).
 
 ## RIEPILOGO
 
-| Severita | Conteggio |
-|----------|-----------|
-| Critico | 3 |
-| Alto | 7 |
-| Medio | 12 |
-| Basso | 15 |
-| Miglioramenti | 12 |
-| **Totale** | **49** |
+| Severita | Totale | Da Fixare |
+|----------|--------|-----------|
+| Critico | 5 | 5 |
+| Alto | 7 | 7 |
+| Medio | 8 | 8 |
+| Basso | 7 | 7 |
+| Miglioramenti | 10 | 10 |
+| **Totale** | **37** | **37** |
