@@ -67,14 +67,29 @@ def _generate_android_id():
     return _random_hex(16)
 
 
+LOCALE_REGION_TZ = {
+    'en_US': ('US', 'America/New_York', 'en'),
+    'it_IT': ('IT', 'Europe/Rome', 'it'),
+    'es_ES': ('ES', 'Europe/Madrid', 'es'),
+    'fr_FR': ('FR', 'Europe/Paris', 'fr'),
+    'de_DE': ('DE', 'Europe/Berlin', 'de'),
+    'pt_BR': ('BR', 'America/Sao_Paulo', 'pt'),
+    'ja_JP': ('JP', 'Asia/Tokyo', 'ja'),
+    'ko_KR': ('KR', 'Asia/Seoul', 'ko'),
+    'ru_RU': ('RU', 'Europe/Moscow', 'ru'),
+    'tr_TR': ('TR', 'Europe/Istanbul', 'tr'),
+}
+ANDROID_SDK_MAP = {'12': '31', '13': '33', '14': '34', '15': '35'}
+
+
 def generate_device():
     model = random.choice(ANDROID_MODELS)
     android_ver = random.choice(ANDROID_VERSIONS)
-    sdk_ver = random.choice(SDK_VERSIONS)
-    locale = random.choice(LOCALES)
-    lang = random.choice(LANGUAGES)
-    region = random.choice(REGIONS)
-    tz = random.choice(TIMEZONES)
+    # SDK coerente con Android (prima: sdk35 + Android12 → rilevabile dal WAF)
+    sdk_ver = ANDROID_SDK_MAP[android_ver]
+    # Locale/regione/timezone/lingua coerenti (prima: it_IT+US+Asia/Tokyo → flag)
+    locale = random.choice(list(LOCALE_REGION_TZ.keys()))
+    region, tz, lang = LOCALE_REGION_TZ[locale]
     carrier = random.choice(CARRIERS)
 
     device = {

@@ -1,14 +1,14 @@
 __pycache__/
+*.pyc
 .pytest_cache/
 captcha.png
-*.pyc
-debug/
-TikTok-Compilation-Video-Generator/
-TikTok-Private-Api-TikApis.com/
-TikTok-Private-Api/
-tiktok-followers-bot/
+
+# Runtime data
 accounts/
 devices/
 data/
 logs/
+debug/
+
+# Config (contains secrets)
 config.json

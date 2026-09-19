@@ -79,14 +79,19 @@ class TikTokBot:
         self.stats = BotStats()
         self.running = False
         self._stop_event = threading.Event()
-
-        self.min_delay = self.config.get('min_delay', 2)
-        self.max_delay = self.config.get('max_delay', 8)
-        self.accounts_per_batch = self.config.get('accounts_per_batch', 3)
+        # Ottimizzati per max throughput parallelo (ispirazione zefoy_client + Ilon)
+        self.min_delay = self.config.get('min_delay', 0.5)
+        self.max_delay = self.config.get('max_delay', 1.5)
+        self.accounts_per_batch = self.config.get('accounts_per_batch', 5)
         self.max_actions_per_account = self.config.get('max_actions_per_account', 5)
         self.auto_create_accounts = self.config.get('auto_create_accounts', True)
         self.target_follows = self.config.get('target_follows', 0)
         self.target_likes = self.config.get('target_likes', 0)
+        self.proxy_list = self.config.get('proxy_list', [])
+        if self.config.get('proxy') and self.config.get('proxy') not in self.proxy_list:
+            self.proxy_list.append(self.config.get('proxy'))
+        self.parallel_workers = self.config.get('parallel_workers', 5)
+        self._video_cache = {'videos': [], 'ts': 0}
 
     def start(self):
         self.running = True
@@ -115,6 +120,8 @@ class TikTokBot:
         sys.exit(0)
 
     def _main_loop(self):
+        # Ottimizzato parallelo: usa ThreadPool per azioni simultanee (ispirazione zefoy multi-thread)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         while self.running and not self._stop_event.is_set():
             self.stats.current_cycle += 1
 
@@ -140,96 +147,155 @@ class TikTokBot:
                     time.sleep(30)
                     continue
 
-            for account in accounts:
-                if not self.running:
-                    break
-
-                if account.is_cooled_down:
-                    continue
-
-                action = random.choice(self.actions)
-                try:
-                    self._perform_action(account, action)
-                except TikTokAPIError as e:
-                    log.error('Action failed for %s: %s', account.username, e)
-                    self.stats.record(action, success=False)
-                    if 'login' in str(e).lower() or 'session' in str(e).lower():
-                        account.mark_banned()
-                        self.stats.total_accounts_banned += 1
-                        log.warning('Account %s marked as banned', account.username)
-                except Exception as e:
-                    log.error('Unexpected error: %s', e)
-                    self.stats.record(action, success=False)
-
-                delay = random.uniform(self.min_delay, self.max_delay) if self.max_delay > 0 else 0
-                if delay > 0:
-                    time.sleep(delay)
+            # Parallelo: esegui azioni su più account contemporaneamente
+            if self.parallel_workers > 1 and len(accounts) > 1:
+                with ThreadPoolExecutor(max_workers=min(self.parallel_workers, len(accounts))) as ex:
+                    futures = {}
+                    for acc in accounts:
+                        if acc.is_cooled_down:
+                            continue
+                        act = random.choice(self.actions)
+                        # proxy rotation per account se lista disponibile
+                        proxy_for_acc = random.choice(self.proxy_list) if self.proxy_list else self.config.get('proxy')
+                        futures[ex.submit(self._perform_action_threadsafe, acc, act, proxy_for_acc)] = (acc.username, act)
+                    for fut in as_completed(futures):
+                        uname, act = futures[fut]
+                        try:
+                            fut.result()
+                        except TikTokAPIError as e:
+                            log.error('Action failed for %s: %s', uname, e)
+                            self.stats.record(act, success=False)
+                        except Exception as e:
+                            log.error('Unexpected error for %s: %s', uname, e)
+                            self.stats.record(act, success=False)
+                # delay ridotto per throughput max
+                time.sleep(random.uniform(0.5, 1.0))
+            else:
+                for account in accounts:
+                    if not self.running:
+                        break
+                    if account.is_cooled_down:
+                        continue
+                    action = random.choice(self.actions)
+                    try:
+                        self._perform_action(account, action)
+                    except TikTokAPIError as e:
+                        log.error('Action failed for %s: %s', account.username, e)
+                        self.stats.record(action, success=False)
+                        if 'login' in str(e).lower() or 'session' in str(e).lower():
+                            account.mark_banned()
+                            self.stats.total_accounts_banned += 1
+                            log.warning('Account %s marked as banned', account.username)
+                    except Exception as e:
+                        log.error('Unexpected error: %s', e)
+                        self.stats.record(action, success=False)
+                    delay = random.uniform(self.min_delay, self.max_delay) if self.max_delay > 0 else 0
+                    if delay > 0:
+                        time.sleep(delay)
 
             if self.stats.current_cycle % 10 == 0:
                 log.info(self.stats.summary())
 
-            time.sleep(random.uniform(1, 3))
+            time.sleep(random.uniform(0.3, 0.8))
 
-    def _perform_action(self, account, action):
-        device = account.device
-        client = TikTokClient(device, proxy=self.config.get('proxy'))
-
-        if account.cookies:
-            client.session.cookies.update(account.cookies)
-        if account.x_tt_token:
-            client.x_token = account.x_tt_token
-        if account.domain:
-            client.domain = account.domain
-        if account.passport_domain:
-            client.passport_domain = account.passport_domain
-
+    def _perform_action_threadsafe(self, account, action, proxy_override=None):
+        # wrapper thread-safe per parallelo
         try:
-            if action == 'follow' and self.target_sec_uid:
-                client.follow(self.target_sec_uid)
-                self.stats.record('follow')
-                self.account_manager.record_action(account, 'follow')
-                log.info('[FOLLOW] %s -> target (total: %d)',
-                         account.username, self.stats.total_follows)
+            return self._perform_action(account, action, proxy_override=proxy_override)
+        except Exception as e:
+            raise e
 
-            elif action == 'like':
-                videos = self._get_target_videos(client)
-                if videos:
-                    video = random.choice(videos)
-                    aweme_id = video.get('aweme_id', '')
-                    if aweme_id:
-                        client.like(aweme_id)
-                        self.stats.record('like')
-                        self.account_manager.record_action(account, 'like')
-                        log.info('[LIKE] %s -> video %s (total: %d)',
-                                 account.username, aweme_id, self.stats.total_likes)
+    def _is_auth_error(self, e):
+        msg = str(e).lower()
+        code = getattr(e, 'code', None)
+        if code in (1005, 1107, 1105, 1108, 2000, 51, 1021):
+            return True
+        return any(k in msg for k in ('login', 'session', 'verify', 'captcha', 'banned', 'expired', 'auth'))
 
-            elif action == 'view':
-                videos = self._get_target_videos(client)
-                if videos:
-                    video = random.choice(videos)
-                    aweme_id = video.get('aweme_id', '')
-                    if aweme_id:
-                        client.view(aweme_id)
-                        self.stats.record('view')
-                        self.account_manager.record_action(account, 'view')
-                        log.info('[VIEW] %s -> video %s (total: %d)',
-                                 account.username, aweme_id, self.stats.total_views)
+    def _perform_action(self, account, action, proxy_override=None):
+        import copy
+        # Deep-copy: prima device era riferimento mutabile condiviso tra thread
+        device = copy.deepcopy(account.device)
+        proxy = proxy_override if proxy_override is not None else self.config.get('proxy')
+        # Il client ora chiude sempre la sessione (prima: leak FD sotto ThreadPool)
+        with TikTokClient(device, proxy=proxy) as client:
+            if account.cookies:
+                try:
+                    client.session.cookies.update(account.cookies)
+                except Exception:
+                    for k, v in dict(account.cookies).items():
+                        try:
+                            client.session.cookies.set(k, v)
+                        except Exception:
+                            pass
+            if account.x_tt_token:
+                client.x_token = account.x_tt_token
+            if account.domain:
+                client.domain = account.domain
+            if account.passport_domain:
+                client.passport_domain = account.passport_domain
 
-        except TikTokAPIError as e:
-            if 'login' in str(e).lower() or 'session' in str(e).lower():
-                account.mark_banned()
-                self.stats.total_accounts_banned += 1
-                log.warning('Account %s marked as banned: %s', account.username, e)
-            raise
+            try:
+                # Richiede uid numerico risolto, non secUid grezzo (vedi client.follow)
+                target_uid = getattr(self, 'target_user_id', None) or self.target_sec_uid
+                if action == 'follow' and target_uid:
+                    client.follow(target_uid)
+                    self.stats.record('follow')
+                    self.account_manager.record_action(account, 'follow')
+                    log.info('[FOLLOW] %s -> target (total: %d)',
+                             account.username, self.stats.total_follows)
+
+                elif action == 'like':
+                    videos = self._get_target_videos(client)
+                    if videos:
+                        video = random.choice(videos)
+                        aweme_id = video.get('aweme_id', '')
+                        if aweme_id:
+                            client.like(aweme_id)
+                            self.stats.record('like')
+                            self.account_manager.record_action(account, 'like')
+                            log.info('[LIKE] %s -> video %s (total: %d)',
+                                     account.username, aweme_id, self.stats.total_likes)
+
+                elif action == 'view':
+                    videos = self._get_target_videos(client)
+                    if videos:
+                        video = random.choice(videos)
+                        aweme_id = video.get('aweme_id', '')
+                        if aweme_id:
+                            client.view(aweme_id)
+                            self.stats.record('view')
+                            self.account_manager.record_action(account, 'view')
+                            log.info('[VIEW] %s -> video %s (total: %d)',
+                                     account.username, aweme_id, self.stats.total_views)
+
+            except TikTokAPIError as e:
+                # Ban detection centralizzata per ramo parallelo E sequenziale
+                # (prima: solo sequenziale marcava banned, su string-match fragile)
+                if self._is_auth_error(e):
+                    try:
+                        account.mark_banned()
+                    except Exception:
+                        pass
+                    self.stats.total_accounts_banned += 1
+                    log.warning('Account %s marked as banned: %s', account.username, e)
+                raise
 
     def _get_target_videos(self, client):
+        # Ottimizzato: cache 60s per evitare N request identiche in parallelo (ispirazione apivault)
         try:
+            now = time.time()
+            if self._video_cache['videos'] and now - self._video_cache['ts'] < 60:
+                return self._video_cache['videos']
             if self.target_sec_uid:
                 resp = client.get_user_videos(self.target_sec_uid, count=5)
-                return resp.get('aweme_list', [])
+                vids = resp.get('aweme_list', [])
+                if vids:
+                    self._video_cache = {'videos': vids, 'ts': now}
+                return vids
         except Exception as e:
             log.debug('Failed to get videos: %s', e)
-        return []
+        return self._video_cache['videos']
 
     def _create_accounts_batch(self, count):
         for i in range(count):

@@ -7,20 +7,27 @@ import time
 from hashlib import md5
 from urllib.parse import urlencode
 
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+    HAS_CV2 = True
+except ImportError:
+    cv2 = None
+    np = None
+    HAS_CV2 = False
+
 import requests
 
 log = logging.getLogger(__name__)
+if not HAS_CV2:
+    log.warning('opencv (cv2) not installed - captcha auto-solver will be disabled (pip install opencv-python)')
 
 try:
-    from TikSign import Argus
-    from TikSign.ladon import Ladon
-    from TikSign.gorgon import xgorgon
-    TIKSIGN_AVAILABLE = True
+    from tiktok_signer import TikTokSigner
+    SIGNER_AVAILABLE = True
 except ImportError:
-    TIKSIGN_AVAILABLE = False
-    log.warning('TikSign not installed - captcha solver will use fallback signing')
+    SIGNER_AVAILABLE = False
+    log.warning('TikTokSigner not installed - captcha solver will use fallback signing')
 
 
 def _generate_xgorgon(url_path, query_str, body_str=''):
@@ -128,35 +135,27 @@ def edata_decrypt(txt):
 
 
 def _sign_params_tiksign(params_str, payload='', device=None):
-    if TIKSIGN_AVAILABLE:
-        result = {}
-        gorgon_result = xgorgon(params_str, data=payload)
-        result.update(gorgon_result)
-        result['x-ladon'] = Ladon.encrypt(int(time.time()), 1611921764, 1233)
+    if SIGNER_AVAILABLE:
         try:
-            argus_result = Argus.encrypt(
-                params=params_str,
-                data=payload,
-                unix=int(time.time()),
-                aid=1233,
-                lc_id=1611921764,
+            signer = TikTokSigner()
+            if device:
+                signer.set_device(device)
+            headers = signer.generate_headers(
+                params=params_str if isinstance(params_str, dict) else {'url': params_str},
+                data=payload.encode() if isinstance(payload, str) else payload or b'',
+                version_code=3704,
+                version_name='37.0.4',
             )
-            if isinstance(argus_result, dict):
-                result['x-argus'] = argus_result.get('X-Argus', argus_result.get('x-argus', ''))
-        except Exception:
-            result['x-argus'] = _generate_xargus(device or {}, params_str)
-        if payload:
-            result['x-ss-stub'] = md5(payload.encode('utf-8')).hexdigest().upper()
-        result['content-length'] = str(len(payload))
-        return result
-    else:
-        url_path = '/captcha/get' if not payload else '/captcha/verify'
-        return {
-            'x-gorgon': _generate_xgorgon(url_path, params_str, payload),
-            'x-argus': _generate_xargus(device or {}, url_path),
-            'x-khronos': _generate_xkhronos(),
-            'content-length': str(len(payload)),
-        }
+            return headers
+        except Exception as e:
+            log.debug('TikTokSigner captcha signing failed: %s', e)
+    url_path = '/captcha/get' if not payload else '/captcha/verify'
+    return {
+        'x-gorgon': _generate_xgorgon(url_path, params_str, payload),
+        'x-argus': _generate_xargus(device or {}, url_path),
+        'x-khronos': _generate_xkhronos(),
+        'content-length': str(len(payload)),
+    }
 
 
 def _get_captcha_base_params(device):
@@ -234,10 +233,14 @@ def _get_user_agent():
 
 class PuzzleSolver:
     def __init__(self, base64_puzzle, base64_piece):
+        if not HAS_CV2:
+            raise RuntimeError("opencv not installed - cannot solve puzzle captcha. pip install opencv-python")
         self.puzzle = base64_puzzle
         self.piece = base64_piece
 
     def get_position(self):
+        if not HAS_CV2:
+            raise RuntimeError("opencv not installed")
         try:
             p = self._sobel(self._img(self.piece))
             t = self._sobel(self._img(self.puzzle))

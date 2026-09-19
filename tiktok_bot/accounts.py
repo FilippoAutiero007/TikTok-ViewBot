@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from .device import generate_device, save_device, load_device, load_all_devices
 from .client import TikTokClient, TikTokAPIError
+from .temp_email import GuerrillaMailClient
 
 log = logging.getLogger(__name__)
 
@@ -111,21 +112,48 @@ class Account:
             'views_sent': self.views_sent,
         }
 
+    def _safe_filename(self):
+        base = (self.user_id or self.username or '').strip()
+        if not base:
+            raise ValueError('Account senza user_id/username: impossibile salvare (evita .json)')
+        safe = ''.join(c for c in base if c.isalnum() or c in ('-', '_', '.'))
+        return (safe or 'account') + '.json'
+
+    @property
+    def is_logged_in(self):
+        return bool(self.user_id and self.cookies and self.x_tt_token)
+
     def save(self):
+        # Solo account verificati in active/: i pending senza login vanno in attesa,
+        # non inquinano la cartella active (prima: placeholder salvati come attivi)
+        if self.status == 'active' and not self.is_logged_in:
+            raise ValueError(
+                f'Account {self.username!r} non loggato (user_id/cookies/x_tt_token vuoti): '
+                'non salvo in active/'
+            )
         os.makedirs(ACTIVE_DIR, exist_ok=True)
-        path = os.path.join(ACTIVE_DIR, f'{self.user_id or self.username}.json')
-        with open(path, 'w') as f:
+        path = os.path.join(ACTIVE_DIR, self._safe_filename())
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
             json.dump(self.to_dict(), f, indent=2)
+        os.replace(tmp, path)
 
     def mark_banned(self):
         self.status = 'banned'
+        self.data['status'] = 'banned'
         os.makedirs(BANNED_DIR, exist_ok=True)
-        path = os.path.join(BANNED_DIR, f'{self.user_id or self.username}.json')
+        path = os.path.join(BANNED_DIR, self._safe_filename())
         with open(path, 'w') as f:
             json.dump(self.to_dict(), f, indent=2)
-        active_path = os.path.join(ACTIVE_DIR, f'{self.user_id or self.username}.json')
-        if os.path.exists(active_path):
-            os.remove(active_path)
+        # Rimuovi TUTTE le varianti (user_id vs username) per non lasciare orfani
+        for cand in {f'{self.user_id}.json', f'{self.username}.json'}:
+            for folder in (ACTIVE_DIR,):
+                p = os.path.join(folder, cand)
+                try:
+                    if os.path.exists(p) and os.path.abspath(p) != os.path.abspath(path):
+                        os.remove(p)
+                except OSError:
+                    pass
 
     def update(self, **kwargs):
         self.data.update(kwargs)
@@ -135,8 +163,9 @@ class Account:
     def is_cooled_down(self):
         if self.last_used == 0:
             return False
-        elapsed = time.time() - self.last_used
-        return elapsed < random.randint(30, 90)
+        # Cooldown deterministico per account (prima: random a ogni accesso → flaky)
+        wait = 30 + (abs(hash(self.username or self.user_id or 'x')) % 61)
+        return (time.time() - self.last_used) < wait
 
     @property
     def age_hours(self):
@@ -144,6 +173,7 @@ class Account:
 
     @property
     def is_too_new(self):
+        # Warmup differenziato: view subito, follow/like dopo 1h (prima: tutto bloccato 1h → deadlock)
         return self.age_hours < 1
 
 
@@ -183,19 +213,67 @@ class AccountManager:
         })
         return account
 
-    def register_account(self, email=None, password=None, proxy=None):
+    def register_account(self, email=None, password=None, proxy=None, use_temp_email=True):
         device = generate_device()
         save_device(device)
 
-        if not email:
+        use_guerrilla = False
+        gm_client = None
+
+        if use_temp_email and not email:
+            gm_client = GuerrillaMailClient()
+            email = gm_client.get_email_address()
+            use_guerrilla = True
+            log.info('Using temp email: %s', email)
+        elif not email:
             email = _random_email()
+
         if not password:
             password = _random_password()
 
         log.info('Registering account: %s', email)
         client = TikTokClient(device, proxy=proxy)
 
-        result = client.register_account(email, password)
+        def code_getter(target_email, timeout=120):
+            if not gm_client:
+                log.error('No GuerrillaMail client for code retrieval')
+                return None
+
+            log.info('Waiting for verification code on %s...', target_email)
+            email_data = gm_client.wait_for_email(
+                timeout=timeout,
+                poll_interval=5,
+                sender_filter='tiktok',
+            )
+
+            if not email_data:
+                email_data = gm_client.wait_for_email(
+                    timeout=30,
+                    poll_interval=5,
+                )
+
+            if not email_data:
+                log.error('No verification email received')
+                return None
+
+            body = email_data.get('mail_body', '') or email_data.get('mail_excerpt', '')
+            if not body:
+                log.error('Email body is empty')
+                return None
+
+            code = GuerrillaMailClient.extract_verification_code(body)
+            if code:
+                log.info('Extracted verification code: %s', code)
+            else:
+                log.error('Could not extract code from email body')
+
+            return code
+
+        result = client.register_with_email_verification(
+            email, password,
+            code_getter=code_getter if use_guerrilla else None,
+            timeout=120,
+        )
 
         if not result:
             log.error('Registration returned None')
@@ -210,7 +288,11 @@ class AccountManager:
             captcha_result = solver.solve()
             if captcha_result:
                 log.info('Captcha solved, retrying registration...')
-                result = client.register_account(email, password)
+                result = client.register_with_email_verification(
+                    email, password,
+                    code_getter=code_getter if use_guerrilla else None,
+                    timeout=120,
+                )
                 if result:
                     status = result.get('status', 'error')
                 else:
@@ -222,6 +304,10 @@ class AccountManager:
 
         if status == 'error':
             log.error('Registration failed: %s', result.get('message', 'Unknown'))
+            return None
+
+        if status == 'verification_required':
+            log.warning('Email verification required but no auto-verify available')
             return None
 
         if status == 'success':
@@ -353,17 +439,23 @@ class AccountManager:
         return min(available, key=lambda a: a.actions_count)
 
     def get_accounts_for_action(self, action_type, count=1):
+        # Solo account VERI (loggati). 'any' ora applica tutti i limiti
+        # (prima: bypassava follows<50/likes<100 e ignorava il cooldown).
         available = [
             a for a in self.accounts
             if a.status == 'active'
-            and not a.is_too_new
+            and getattr(a, 'is_logged_in', False)
+            and not a.is_cooled_down
         ]
-        if action_type == 'follow':
+        if action_type in ('follow', 'any'):
             available = [a for a in available if a.follows_sent < 50]
-        elif action_type == 'like':
+        if action_type in ('like', 'any'):
             available = [a for a in available if a.likes_sent < 100]
-        elif action_type == 'view':
+        if action_type in ('view', 'any'):
             available = [a for a in available if a.views_sent < 200]
+        if action_type in ('follow', 'like'):
+            # Warmup: follow/like solo dopo 1h (view permesse subito)
+            available = [a for a in available if not a.is_too_new]
 
         available.sort(key=lambda a: (a.actions_count, a.last_used))
         return available[:count]

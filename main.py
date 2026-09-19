@@ -14,6 +14,7 @@ from tiktok_bot.accounts import AccountManager
 from tiktok_bot.device import generate_batch, load_all_devices
 from tiktok_bot.utils import parse_tiktok_url, resolve_sec_uid, validate_tiktok_url
 
+os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -220,6 +221,81 @@ def cmd_create_accounts(args):
     print(_c(Fore.GREEN, f"Created {count} accounts. Use 'register' to activate them on TikTok."))
 
 
+def cmd_create_real(args):
+    print(BANNER)
+    from tiktok_bot.account_creator import TikTokAccountCreator, create_accounts_batch
+
+    # load proxy list if provided
+    proxy_list = None
+    if args.proxy_list:
+        if os.path.exists(args.proxy_list):
+            with open(args.proxy_list) as f:
+                proxy_list = [l.strip() for l in f if l.strip() and not l.startswith('#')]
+            print(_c(Fore.CYAN, f"Loaded {len(proxy_list)} proxies from {args.proxy_list} (cose in parallelo)"))
+        else:
+            print(_c(Fore.YELLOW, f"Proxy list not found: {args.proxy_list}, using single proxy"))
+    elif args.proxy:
+        proxy_list = [args.proxy]
+
+    if args.batch:
+        print(_c(Fore.CYAN, f"Creating {args.count} TikTok accounts via browser (v2 multi-provider, parallel={args.workers})..."))
+        print(_c(Fore.YELLOW, "Each account will open a browser window (parallel)."))
+        print(_c(Fore.YELLOW, "If captcha appears, solve it manually in the browser."))
+        print(_c(Fore.YELLOW, f"Email domain pref: {args.email_domain} | Lang: {args.lang} | Workers: {args.workers}"))
+        print("")
+        results = create_accounts_batch(
+            count=args.count,
+            headless=args.headless,
+            proxy=args.proxy,
+            delay_min=args.min_delay,
+            delay_max=args.max_delay,
+            max_workers=args.workers,
+            proxy_list=proxy_list,
+        )
+        print("")
+        print(_c(Fore.GREEN, "Batch Creation Complete (v2 parallel)"))
+        print(f"  Successful (verified):  {results['success']}")
+        print(f"  Failed:                 {results['failed']}")
+        print(f"  Total:                  {args.count}")
+        if results['success'] > 0:
+            print(_c(Fore.GREEN, f"Accounts saved in accounts/active/"))
+        else:
+            print(_c(Fore.YELLOW, "No verified accounts - check logs/tiktok_bot.log and screenshots _*.png"))
+            print(_c(Fore.YELLOW, f"Tip: usa --proxy-list data/proxies.txt con 20-30 proxy validi per 80-120/h"))
+    else:
+        print(_c(Fore.CYAN, "Creating single TikTok account via browser (v2)..."))
+        print(_c(Fore.YELLOW, "A browser window will open. Follow the steps."))
+        print(_c(Fore.YELLOW, f"Provider fallback enabled (mail.tm -> guerrilla -> 1secmail)"))
+        print("")
+        creator = TikTokAccountCreator(
+            headless=args.headless,
+            proxy=args.proxy,
+            email_domain=args.email_domain if args.email_domain != 'guerrillamail.com' else None,
+            lang=args.lang,
+        )
+        account = creator.create_account()
+        if account and account.get('verification_success'):
+            print("")
+            print(_c(Fore.GREEN, "Account Created Successfully! (Verified)"))
+            print(f"  Email:     {account.get('email')}")
+            print(f"  Password:  {account.get('password')}")
+            print(f"  Username:  {account.get('username')}")
+            print(f"  User ID:   {account.get('user_id')}")
+            print(f"  Provider:  {account.get('provider')}")
+            print(f"  Cookies:   {len(account.get('cookies', {}))} saved")
+            print("")
+        elif account and not account.get('verification_success'):
+            print(_c(Fore.YELLOW, "Account created but NOT verified (check manually)."))
+            print(f"  Email: {account.get('email')} Status: {account.get('status')}")
+            print(f"  See screenshots and logs for details.")
+        else:
+            print(_c(Fore.RED, "Account creation failed after all email rotations."))
+            print(_c(Fore.YELLOW, "Possible reasons: TikTok blocks disposable emails, rate limit, or network error."))
+            print("  - Try with --proxy or different --email-domain")
+            print("  - Check logs/tiktok_bot.log and _after_send_*.png screenshots")
+            print("  - Try --headless False to solve captcha manually")
+
+
 def cmd_devices(args):
     print(BANNER)
     if args.generate:
@@ -329,6 +405,18 @@ Examples:
     create_parser.add_argument('--password', default=None, help='Specific password')
     create_parser.add_argument('--username', default=None, help='Specific username')
 
+    create_real_parser = subparsers.add_parser('create-real', help='Create real TikTok accounts via browser (free, email only) - v2 multi-provider')
+    create_real_parser.add_argument('--batch', action='store_true', help='Batch mode: create multiple accounts')
+    create_real_parser.add_argument('--count', '-n', type=int, default=1, help='Number of accounts to create')
+    create_real_parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
+    create_real_parser.add_argument('--proxy', default=None, help='Proxy (socks5://host:port) single proxy')
+    create_real_parser.add_argument('--proxy-list', default=None, help='File con lista proxy (uno per riga) per rotazione parallela, es. data/proxies.txt')
+    create_real_parser.add_argument('--workers', type=int, default=1, help='Num thread paralleli per creazione (1=sequenziale, 3-5 consigliato per massimizzare, cose in parallelo)')
+    create_real_parser.add_argument('--email-domain', default=None, help='Force specific email domain (default: auto-rotate via mail.tm/guerrilla/1secmail)')
+    create_real_parser.add_argument('--lang', default='it-IT', help='Browser language (it-IT, en-US, etc)')
+    create_real_parser.add_argument('--min-delay', type=float, default=10, help='Min delay between accounts (seconds)')
+    create_real_parser.add_argument('--max-delay', type=float, default=30, help='Max delay between accounts (seconds)')
+
     devices_parser = subparsers.add_parser('devices', help='Manage device configs')
     devices_parser.add_argument('--generate', '-g', type=int, help='Generate N device configs')
 
@@ -349,6 +437,7 @@ Examples:
         'login': cmd_login,
         'run': cmd_run,
         'create-accounts': cmd_create_accounts,
+        'create-real': cmd_create_real,
         'devices': cmd_devices,
         'stats': cmd_stats,
         'config': cmd_config,
